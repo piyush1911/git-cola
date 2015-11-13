@@ -75,7 +75,12 @@ else:
         text = """
 This test is so meta, even this sentence
 
-With-special-tag: Avoids word-wrap
+Cheered-on-by: Avoids word-wrap
+C.f. This also avoids word-wrap
+References: This also avoids word-wrap
+See-also: This also avoids word-wrap
+Related-to: This also avoids word-wrap
+Link: This also avoids word-wrap
 """
 
         expect = """
@@ -88,7 +93,12 @@ even
 this
 sentence
 
-With-special-tag: Avoids word-wrap
+Cheered-on-by: Avoids word-wrap
+C.f. This also avoids word-wrap
+References: This also avoids word-wrap
+See-also: This also avoids word-wrap
+Related-to: This also avoids word-wrap
+Link: This also avoids word-wrap
 """
 
         self.assertEqual(self.wrap(text), expect)

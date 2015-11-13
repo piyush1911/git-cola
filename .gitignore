@@ -6,6 +6,8 @@
 /share/locale
 /test/tmp
 /tags
+/*.html
+/pynsist_pkgs/
 .DS_Store
 .noseids
 *.gz

@@ -119,7 +119,7 @@ class Commit(object):
     def parse(self, log_entry, sep=logsep):
         self.sha1 = log_entry[:40]
         (parents, tags, author, authdate, email, summary) = \
-                log_entry[41:].split(sep, 6)
+                log_entry[41:].split(sep, 5)
 
         self.summary = summary and summary or ''
         self.author = author and author or ''
@@ -139,18 +139,58 @@ class Commit(object):
 
         if tags:
             for tag in tags[2:-1].split(', '):
-                if tag.startswith('tag: '):
-                    tag = tag[5:] # tag: refs/
-                elif tag.startswith('refs/remotes/'):
-                    tag = tag[13:] # refs/remotes/
-                elif tag.startswith('refs/heads/'):
-                    tag = tag[11:] # refs/heads/
-                if tag.endswith('/HEAD'):
-                    continue
-                self.tags.add(tag)
+                self.add_label(tag)
 
         self.parsed = True
         return self
+
+    def add_label(self, tag):
+        """Add tag/branch labels from `git log --decorate ....`"""
+
+        if tag.startswith('tag: '):
+            tag = tag[5:] # tag: refs/
+        elif tag.startswith('refs/remotes/'):
+            tag = tag[13:] # refs/remotes/
+        elif tag.startswith('refs/heads/'):
+            tag = tag[11:] # refs/heads/
+        if tag.endswith('/HEAD'):
+            return
+
+        # Git 2.4 Release Notes (draft)
+        # =============================
+        #
+        # Backward compatibility warning(s)
+        # ---------------------------------
+        #
+        # This release has a few changes in the user-visible output from
+        # Porcelain commands. These are not meant to be parsed by scripts, but
+        # the users still may want to be aware of the changes:
+        #
+        #  * Output from "git log --decorate" (and "%d" format specifier used in
+        #    the userformat "--format=<string>" parameter "git log" family of
+        #    command takes) used to list "HEAD" just like other tips of branch
+        #    names, separated with a comma in between.  E.g.
+        #
+        #      $ git log --decorate -1 master
+        #      commit bdb0f6788fa5e3cacc4315e9ff318a27b2676ff4 (HEAD, master)
+        #      ...
+        #
+        #    This release updates the output slightly when HEAD refers to the tip
+        #    of a branch whose name is also shown in the output.  The above is
+        #    shown as:
+        #
+        #      $ git log --decorate -1 master
+        #      commit bdb0f6788fa5e3cacc4315e9ff318a27b2676ff4 (HEAD -> master)
+        #      ...
+        #
+        # C.f. http://thread.gmane.org/gmane.linux.kernel/1931234
+
+        head_arrow = 'HEAD -> '
+        if tag.startswith(head_arrow):
+            self.tags.add('HEAD')
+            self.tags.add(tag[len(head_arrow):])
+        else:
+            self.tags.add(tag)
 
     def __str__(self):
         return self.sha1
@@ -176,8 +216,8 @@ class Commit(object):
 
 class RepoReader(object):
 
-    def __init__(self, dag, git=git):
-        self.dag = dag
+    def __init__(self, ctx, git=git):
+        self.ctx = ctx
         self.git = git
         self._proc = None
         self._objects = {}
@@ -223,8 +263,8 @@ class RepoReader(object):
                 raise StopIteration
 
         if self._proc is None:
-            ref_args = utils.shell_split(self.dag.ref)
-            cmd = self._cmd + ['-%d' % self.dag.count] + ref_args
+            ref_args = utils.shell_split(self.ctx.ref)
+            cmd = self._cmd + ['-%d' % self.ctx.count] + ref_args
             self._proc = core.start_command(cmd)
             self._topo_list = []
 
@@ -232,6 +272,7 @@ class RepoReader(object):
         if not log_entry:
             self._cached = True
             self._proc.wait()
+            self.returncode = self._proc.returncode
             self._proc = None
             raise StopIteration
 

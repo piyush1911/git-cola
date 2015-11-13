@@ -5,26 +5,26 @@ from PyQt4 import QtCore
 from PyQt4.QtCore import Qt
 
 from cola import cmds
+from cola import icons
 from cola import qtutils
 from cola.i18n import N_
-from cola.qtutils import connect_button
-from cola.qtutils import critical
-from cola.qtutils import information
+from cola.widgets import defs
 from cola.widgets import completion
 from cola.widgets import standard
 from cola.widgets import text
 
 
-def new_create_tag(name='', ref='', sign=False, parent=None):
+def new_create_tag(name='', ref='', sign=False, settings=None, parent=None):
     """Entry point for external callers."""
     opts = TagOptions(name, ref, sign)
-    view = CreateTag(opts, parent=parent)
+    view = CreateTag(opts, settings=settings, parent=parent)
     return view
 
 
-def create_tag(name='', ref='', sign=False):
+def create_tag(name='', ref='', sign=False, settings=None):
     """Entry point for external callers."""
     view = new_create_tag(name=name, ref=ref, sign=sign,
+                          settings=settings,
                           parent=qtutils.active_window())
     view.show()
     view.raise_()
@@ -43,86 +43,70 @@ class TagOptions(object):
 
 class CreateTag(standard.Dialog):
 
-    def __init__(self, opts, parent=None):
+    def __init__(self, opts, settings=None, parent=None):
         standard.Dialog.__init__(self, parent=parent)
+
+        self.opts = opts
+
         self.setAttribute(Qt.WA_MacMetalStyle)
         self.setWindowTitle(N_('Create Tag'))
         if parent is not None:
             self.setWindowModality(QtCore.Qt.WindowModal)
 
-        self.opts = opts
-
-        self.main_layt = QtGui.QVBoxLayout(self)
-        self.main_layt.setContentsMargins(6, 12, 6, 6)
-
-        # Form layout for inputs
-        self.input_form_layt = QtGui.QFormLayout()
-        self.input_form_layt.setFieldGrowthPolicy(QtGui.QFormLayout.ExpandingFieldsGrow)
-
         # Tag label
         self.tag_name_label = QtGui.QLabel(self)
         self.tag_name_label.setText(N_('Name'))
-        self.input_form_layt.setWidget(0, QtGui.QFormLayout.LabelRole,
-                                       self.tag_name_label)
 
         self.tag_name = text.HintedLineEdit(N_('vX.Y.Z'), self)
         self.tag_name.set_value(opts.name)
         self.tag_name.setToolTip(N_('Specifies the tag name'))
-        self.input_form_layt.setWidget(0, QtGui.QFormLayout.FieldRole,
-                                       self.tag_name)
 
         # Sign Tag
         self.sign_label = QtGui.QLabel(self)
         self.sign_label.setText(N_('Sign Tag'))
-        self.input_form_layt.setWidget(1, QtGui.QFormLayout.LabelRole,
-                                       self.sign_label)
 
-        self.sign_tag = QtGui.QCheckBox(self)
-        self.sign_tag.setChecked(opts.sign)
-        self.sign_tag.setToolTip(N_('Whether to sign the tag (git tag -s)'))
-        self.input_form_layt.setWidget(1, QtGui.QFormLayout.FieldRole,
-                                       self.sign_tag)
-        self.main_layt.addLayout(self.input_form_layt)
+        tooltip = N_('Whether to sign the tag (git tag -s)')
+        self.sign_tag = qtutils.checkbox(checked=True, tooltip=tooltip)
 
         # Tag message
         self.tag_msg_label = QtGui.QLabel(self)
         self.tag_msg_label.setText(N_('Message'))
-        self.input_form_layt.setWidget(2, QtGui.QFormLayout.LabelRole,
-                                       self.tag_msg_label)
 
         self.tag_msg = text.HintedTextEdit(N_('Tag message...'), self)
         self.tag_msg.setToolTip(N_('Specifies the tag message'))
-        self.tag_msg.enable_hint(True)
-        self.input_form_layt.setWidget(2, QtGui.QFormLayout.FieldRole,
-                                       self.tag_msg)
+        self.tag_msg.hint.enable(True)
         # Revision
         self.rev_label = QtGui.QLabel(self)
         self.rev_label.setText(N_('Revision'))
-        self.input_form_layt.setWidget(3, QtGui.QFormLayout.LabelRole,
-                                       self.rev_label)
 
         self.revision = completion.GitRefLineEdit()
         self.revision.setText(self.opts.ref)
         self.revision.setToolTip(N_('Specifies the SHA-1 to tag'))
-        self.input_form_layt.setWidget(3, QtGui.QFormLayout.FieldRole,
-                                       self.revision)
-
         # Buttons
-        self.button_hbox_layt = QtGui.QHBoxLayout()
-        self.button_hbox_layt.addStretch()
-
         self.create_button = qtutils.create_button(text=N_('Create Tag'),
-                                                   icon=qtutils.git_icon())
-        self.button_hbox_layt.addWidget(self.create_button)
-        self.main_layt.addLayout(self.button_hbox_layt)
+                                                   icon=icons.tag())
+        self.close_button = qtutils.close_button()
 
-        self.close_button = qtutils.create_button(text=N_('Close'))
-        self.button_hbox_layt.addWidget(self.close_button)
+        # Form layout for inputs
+        self.input_layout = qtutils.form(defs.margin, defs.spacing,
+                                         (self.tag_name_label, self.tag_name),
+                                         (self.tag_msg_label, self.tag_msg),
+                                         (self.rev_label, self.revision),
+                                         (self.sign_label, self.sign_tag))
 
-        connect_button(self.close_button, self.accept)
-        connect_button(self.create_button, self.create_tag)
+        self.button_layout = qtutils.hbox(defs.no_margin, defs.spacing,
+                                          qtutils.STRETCH, self.create_button,
+                                          self.close_button)
 
-        self.resize(506, 295)
+        self.main_layt = qtutils.vbox(defs.margin, defs.spacing,
+                                      self.input_layout, self.button_layout)
+        self.setLayout(self.main_layt)
+
+        qtutils.connect_button(self.close_button, self.close)
+        qtutils.connect_button(self.create_button, self.create_tag)
+
+        if not self.restore_state(settings=settings):
+            self.resize(defs.scale(720), defs.scale(210))
 
     def create_tag(self):
         """Verifies inputs and emits a notifier tag message."""
@@ -133,12 +117,12 @@ class CreateTag(standard.Dialog):
         sign_tag = self.sign_tag.isChecked()
 
         if not revision:
-            critical(N_('Missing Revision'),
-                     N_('Please specify a revision to tag.'))
+            qtutils.critical(N_('Missing Revision'),
+                             N_('Please specify a revision to tag.'))
             return
         elif not tag_name:
-            critical(N_('Missing Name'),
-                     N_('Please specify a name for the new tag.'))
+            qtutils.critical(N_('Missing Name'),
+                             N_('Please specify a name for the new tag.'))
             return
         elif (sign_tag and not tag_msg and
                 not qtutils.confirm(N_('Missing Tag Message'),
@@ -148,13 +132,19 @@ class CreateTag(standard.Dialog):
                                        'created instead.\n'
                                        'Create an unsigned tag?'),
                                     N_('Create Unsigned Tag'),
-                                    default=False,
-                                    icon=qtutils.save_icon())):
+                                    default=False, icon=icons.save())):
             return
 
-        cmds.do(cmds.Tag, tag_name, revision,
-                sign=sign_tag, message=tag_msg)
-        information(N_('Tag Created'),
-                    N_('Created a new tag named "%s"') % tag_name,
-                    details=tag_msg or None)
-        self.accept()
+        status, output, err = cmds.do(cmds.Tag, tag_name, revision,
+                                      sign=sign_tag, message=tag_msg)
+
+        if status == 0:
+            qtutils.information(N_('Tag Created'),
+                                N_('Created a new tag named "%s"') % tag_name,
+                                details=tag_msg or None)
+            self.close()
+        else:
+            qtutils.critical(N_('Error: could not create tag "%s"') % tag_name,
+                             (N_('git tag returned exit code %s') % status) +
+                             ((output+err) and ('\n\n' + output + err) or ''))
+

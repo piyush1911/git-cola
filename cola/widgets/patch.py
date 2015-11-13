@@ -8,6 +8,8 @@ from PyQt4.QtCore import Qt
 
 from cola import core
 from cola import cmds
+from cola import hotkeys
+from cola import icons
 from cola import qtutils
 from cola.i18n import N_
 from cola.widgets import defs
@@ -70,7 +72,7 @@ class ApplyPatches(Dialog):
         if parent is not None:
             self.setWindowModality(Qt.WindowModal)
 
-        self.curdir = os.getcwd()
+        self.curdir = core.getcwd()
         self.inner_drag = False
 
         self.usage = QtGui.QLabel()
@@ -85,51 +87,37 @@ class ApplyPatches(Dialog):
         self.tree.setHeaderHidden(True)
 
         self.add_button = qtutils.create_toolbutton(
-                text=N_('Add'), icon=qtutils.add_icon(),
+                text=N_('Add'), icon=icons.add(),
                 tooltip=N_('Add patches (+)'))
 
         self.remove_button = qtutils.create_toolbutton(
-                text=N_('Remove'), icon=qtutils.remove_icon(),
+                text=N_('Remove'), icon=icons.remove(),
                 tooltip=N_('Remove selected (Delete)'))
 
         self.apply_button = qtutils.create_button(
-                text=N_('Apply'), icon=qtutils.apply_icon())
+                text=N_('Apply'), icon=icons.ok())
 
-        self.close_button = qtutils.create_button(
-                text=N_('Close'), icon=qtutils.close_icon())
+        self.close_button = qtutils.close_button()
 
         self.add_action = qtutils.add_action(self,
-                N_('Add'), self.add_files,
-                Qt.Key_Plus)
+                N_('Add'), self.add_files, hotkeys.ADD_ITEM)
 
         self.remove_action = qtutils.add_action(self,
                 N_('Remove'), self.tree.remove_selected,
-                QtGui.QKeySequence.Delete, Qt.Key_Backspace,
-                Qt.Key_Minus)
+                hotkeys.DELETE, hotkeys.BACKSPACE, hotkeys.REMOVE_ITEM)
 
-        layout = QtGui.QVBoxLayout()
-        layout.setMargin(defs.margin)
-        layout.setSpacing(defs.spacing)
+        self.top_layout = qtutils.hbox(defs.no_margin, defs.button_spacing,
+                                       self.add_button, self.remove_button,
+                                       qtutils.STRETCH, self.usage)
 
-        top = QtGui.QHBoxLayout()
-        top.setMargin(defs.no_margin)
-        top.setSpacing(defs.button_spacing)
-        top.addWidget(self.add_button)
-        top.addWidget(self.remove_button)
-        top.addStretch()
-        top.addWidget(self.usage)
+        self.bottom_layout = qtutils.hbox(defs.no_margin, defs.button_spacing,
+                                          self.apply_button, qtutils.STRETCH,
+                                          self.close_button)
 
-        bottom = QtGui.QHBoxLayout()
-        bottom.setMargin(defs.no_margin)
-        bottom.setSpacing(defs.button_spacing)
-        bottom.addWidget(self.apply_button)
-        bottom.addStretch()
-        bottom.addWidget(self.close_button)
-
-        layout.addLayout(top)
-        layout.addWidget(self.tree)
-        layout.addLayout(bottom)
-        self.setLayout(layout)
+        self.main_layout = qtutils.vbox(defs.margin, defs.spacing,
+                                        self.top_layout, self.tree,
+                                        self.bottom_layout)
+        self.setLayout(self.main_layout)
 
         qtutils.connect_button(self.add_button, self.add_files)
         qtutils.connect_button(self.remove_button, self.tree.remove_selected)
@@ -186,7 +174,7 @@ class PatchTreeWidget(DraggableTreeWidget):
         if not patches:
             return
         items = []
-        icon = qtutils.file_icon()
+        icon = icons.file_text()
         for patch in patches:
             item = QtGui.QTreeWidgetItem()
             flags = item.flags() & ~Qt.ItemIsDropEnabled

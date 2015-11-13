@@ -1,15 +1,17 @@
 """A widget for searching git commits"""
 from __future__ import division, absolute_import, unicode_literals
 
-import os
 import time
 import subprocess
 
 from PyQt4 import QtGui
 from PyQt4 import QtCore
+from PyQt4.QtCore import Qt
 from PyQt4.QtCore import SIGNAL
 
+from cola import core
 from cola import gitcmds
+from cola import icons
 from cola import utils
 from cola import qtutils
 from cola.i18n import N_
@@ -18,7 +20,6 @@ from cola.git import git
 from cola.git import STDOUT
 from cola.qtutils import connect_button
 from cola.qtutils import create_toolbutton
-from cola.qtutils import dir_icon
 from cola.widgets import defs
 from cola.widgets import standard
 from cola.widgets.diff import DiffTextEdit
@@ -40,11 +41,11 @@ class SearchOptions(object):
 class SearchWidget(standard.Dialog):
     def __init__(self, parent):
         standard.Dialog.__init__(self, parent)
-        self.setAttribute(QtCore.Qt.WA_MacMetalStyle)
+        self.setAttribute(Qt.WA_MacMetalStyle)
         self.setWindowTitle(N_('Search'))
 
         self.mode_combo = QtGui.QComboBox()
-        self.browse_button = create_toolbutton(icon=dir_icon(),
+        self.browse_button = create_toolbutton(icon=icons.folder(),
                                                tooltip=N_('Browse...'))
         self.query = QtGui.QLineEdit()
 
@@ -58,9 +59,9 @@ class SearchWidget(standard.Dialog):
         self.end_date.setCalendarPopup(True)
         self.end_date.setDisplayFormat(N_('yyyy-MM-dd'))
 
-        self.search_button = QtGui.QPushButton()
-        self.search_button.setText(N_('Search'))
-        self.search_button.setDefault(True)
+        icon = icons.search()
+        self.search_button = qtutils.create_button(text=N_('Search'),
+                                                   icon=icon, default=True)
 
         self.max_count = QtGui.QSpinBox()
         self.max_count.setMinimum(5)
@@ -71,53 +72,35 @@ class SearchWidget(standard.Dialog):
         self.commit_list = QtGui.QListWidget()
         self.commit_list.setMinimumSize(QtCore.QSize(1, 1))
         self.commit_list.setAlternatingRowColors(True)
-        self.commit_list.setSelectionMode(QtGui.QAbstractItemView.SingleSelection)
+        selection_mode = QtGui.QAbstractItemView.SingleSelection
+        self.commit_list.setSelectionMode(selection_mode)
 
         self.commit_text = DiffTextEdit(self, whitespace=False)
 
-        self.button_export = QtGui.QPushButton()
-        self.button_export.setText(N_('Export Patches'))
+        self.button_export = qtutils.create_button(text=N_('Export Patches'),
+                                                   icon=icons.diff())
 
-        self.button_cherrypick = QtGui.QPushButton()
-        self.button_cherrypick.setText(N_('Cherry Pick'))
+        self.button_cherrypick = qtutils.create_button(text=N_('Cherry Pick'),
+                                                       icon=icons.save())
+        self.button_close = qtutils.close_button()
 
-        self.button_close = QtGui.QPushButton()
-        self.button_close.setText(N_('Close'))
+        self.top_layout = qtutils.hbox(defs.no_margin, defs.button_spacing,
+                                       self.query, self.start_date,
+                                       self.end_date, self.browse_button,
+                                       self.search_button, qtutils.STRETCH,
+                                       self.mode_combo, self.max_count)
 
-        self.top_layout = QtGui.QHBoxLayout()
-        self.top_layout.setMargin(0)
-        self.top_layout.setSpacing(defs.button_spacing)
+        self.splitter = qtutils.splitter(Qt.Vertical,
+                                         self.commit_list, self.commit_text)
 
-        self.top_layout.addWidget(self.query)
-        self.top_layout.addWidget(self.start_date)
-        self.top_layout.addWidget(self.end_date)
-        self.top_layout.addWidget(self.browse_button)
-        self.top_layout.addWidget(self.search_button)
-        self.top_layout.addStretch()
-        self.top_layout.addWidget(self.mode_combo)
-        self.top_layout.addWidget(self.max_count)
+        self.bottom_layout = qtutils.hbox(defs.no_margin, defs.spacing,
+                                          self.button_export,
+                                          self.button_cherrypick,
+                                          qtutils.STRETCH, self.button_close)
 
-        self.splitter = QtGui.QSplitter()
-        self.splitter.setHandleWidth(defs.handle_width)
-        self.splitter.setOrientation(QtCore.Qt.Vertical)
-        self.splitter.setChildrenCollapsible(True)
-        self.splitter.addWidget(self.commit_list)
-        self.splitter.addWidget(self.commit_text)
-
-        self.bottom_layout = QtGui.QHBoxLayout()
-        self.bottom_layout.setMargin(0)
-        self.bottom_layout.setSpacing(defs.spacing)
-        self.bottom_layout.addWidget(self.button_export)
-        self.bottom_layout.addWidget(self.button_cherrypick)
-        self.bottom_layout.addStretch()
-        self.bottom_layout.addWidget(self.button_close)
-
-        self.main_layout = QtGui.QVBoxLayout()
-        self.main_layout.setMargin(defs.margin)
-        self.main_layout.setSpacing(defs.spacing)
-        self.main_layout.addLayout(self.top_layout)
-        self.main_layout.addWidget(self.splitter)
-        self.main_layout.addLayout(self.bottom_layout)
+        self.main_layout = qtutils.vbox(defs.margin, defs.spacing,
+                                        self.top_layout, self.splitter,
+                                        self.bottom_layout)
         self.setLayout(self.main_layout)
 
         if self.parent():
@@ -281,7 +264,7 @@ class Search(SearchWidget):
         self.set_date(self.end_date, datestr)
 
     def set_date(self, widget, datestr):
-        fmt = QtCore.Qt.ISODate
+        fmt = Qt.ISODate
         date = QtCore.QDate.fromString(datestr, fmt)
         if date:
             widget.setDate(date)
@@ -300,14 +283,14 @@ class Search(SearchWidget):
         self.end_date.setVisible(date_shown)
 
     def mode(self):
-        return str(self.mode_combo.currentText())
+        return ustr(self.mode_combo.currentText())
 
     def search_callback(self, *args):
         engineclass = self.engines[self.mode()]
         self.model.query = ustr(self.query.text())
         self.model.max_count = self.max_count.value()
 
-        fmt = QtCore.Qt.ISODate
+        fmt = Qt.ISODate
         self.model.start_date = str(self.start_date.date().toString(fmt))
         self.model.end_date = str(self.end_date.date().toString(fmt))
 
@@ -324,9 +307,9 @@ class Search(SearchWidget):
         if not paths:
             return
         filepaths = []
-        lenprefix = len(os.getcwd()) + 1
+        lenprefix = len(core.getcwd()) + 1
         for path in map(lambda x: ustr(x), paths):
-            if not path.startswith(os.getcwd()):
+            if not path.startswith(core.getcwd()):
                 continue
             filepaths.append(path[lenprefix:])
         query = subprocess.list2cmdline(filepaths)
@@ -335,35 +318,36 @@ class Search(SearchWidget):
             self.search_callback()
 
     def display_results(self):
-        commit_list = map(lambda x: x[1], self.results)
+        commit_list = [result[1] for result in self.results]
         self.set_commit_list(commit_list)
 
+    def selected_revision(self):
+        result = qtutils.selected_item(self.commit_list, self.results)
+        if result is None:
+            return None
+        else:
+            return result[0]
+
     def display(self, *args):
-        widget = self.commit_list
-        row, selected = qtutils.selected_row(widget)
-        if not selected or len(self.results) < row:
+        revision = self.selected_revision()
+        if revision is None:
             self.commit_text.setText('')
-            return
-        revision = self.results[row][0]
-        qtutils.set_clipboard(revision)
-        diff = gitcmds.commit_diff(revision)
-        self.commit_text.setText(diff)
+        else:
+            qtutils.set_clipboard(revision)
+            diff = gitcmds.commit_diff(revision)
+            self.commit_text.setText(diff)
 
     def export_patch(self):
-        widget = self.commit_list
-        row, selected = qtutils.selected_row(widget)
-        if not selected or len(self.results) < row:
-            return
-        revision = self.results[row][0]
-        Interaction.log_status(*gitcmds.export_patchset(revision, revision))
+        revision = self.selected_revision()
+        if revision is not None:
+            Interaction.log_status(*gitcmds.export_patchset(revision,
+                                                            revision))
 
     def cherry_pick(self):
-        widget = self.commit_list
-        row, selected = qtutils.selected_row(widget)
-        if not selected or len(self.results) < row:
-            return
-        revision = self.results[row][0]
-        Interaction.log_status(*git.cherry_pick(revision))
+        revision = self.selected_revision()
+        if revision is not None:
+            Interaction.log_status(*git.cherry_pick(revision))
+
 
 def search_commits(parent):
     opts = SearchOptions()

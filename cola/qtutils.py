@@ -3,8 +3,7 @@
 """
 from __future__ import division, absolute_import, unicode_literals
 
-import os
-import re
+import subprocess
 
 from PyQt4 import QtGui
 from PyQt4 import QtCore
@@ -13,26 +12,36 @@ from PyQt4.QtCore import SIGNAL
 
 from cola import core
 from cola import gitcfg
+from cola import hotkeys
+from cola import icons
 from cola import utils
 from cola import resources
-from cola.decorators import memoize
 from cola.i18n import N_
 from cola.interaction import Interaction
-from cola.models.prefs import FONTDIFF
-from cola.widgets import defs
 from cola.compat import ustr
+from cola.compat import PY3
+from cola.models import prefs
+from cola.widgets import defs
 
 
 def connect_action(action, fn):
+    """Connectc an action to a function"""
     action.connect(action, SIGNAL('triggered()'), fn)
 
 
 def connect_action_bool(action, fn):
+    """Connect a triggered(bool) action to a function"""
     action.connect(action, SIGNAL('triggered(bool)'), fn)
 
 
 def connect_button(button, fn):
+    """Connect a button to a function"""
     button.connect(button, SIGNAL('clicked()'), fn)
+
+
+def button_action(button, action):
+    """Make a button trigger an action"""
+    connect_button(button, action.trigger)
 
 
 def connect_toggle(toggle, fn):
@@ -41,6 +50,96 @@ def connect_toggle(toggle, fn):
 
 def active_window():
     return QtGui.QApplication.activeWindow()
+
+
+def hbox(margin, spacing, *items):
+    return box(QtGui.QHBoxLayout, margin, spacing, *items)
+
+
+def vbox(margin, spacing, *items):
+    return box(QtGui.QVBoxLayout, margin, spacing, *items)
+
+
+def buttongroup(*items):
+    group = QtGui.QButtonGroup()
+    for i in items:
+        group.addButton(i)
+    return group
+
+
+STRETCH = object()
+SKIPPED = object()
+
+
+def box(cls, margin, spacing, *items):
+    stretch = STRETCH
+    skipped = SKIPPED
+    layout = cls()
+    layout.setMargin(margin)
+    layout.setSpacing(spacing)
+
+    if PY3:
+        int_types = (int,)
+    else:
+        int_types = (int, long)
+
+    for i in items:
+        if isinstance(i, QtGui.QWidget):
+            layout.addWidget(i)
+        elif isinstance(i, (QtGui.QHBoxLayout, QtGui.QVBoxLayout,
+                            QtGui.QFormLayout, QtGui.QLayout)):
+            layout.addLayout(i)
+        elif i is stretch:
+            layout.addStretch()
+        elif i is skipped:
+            continue
+        elif isinstance(i, int_types):
+            layout.addSpacing(i)
+
+    return layout
+
+
+def form(margin, spacing, *widgets):
+    layout = QtGui.QFormLayout()
+    layout.setMargin(margin)
+    layout.setSpacing(spacing)
+    layout.setFieldGrowthPolicy(QtGui.QFormLayout.ExpandingFieldsGrow)
+
+    for idx, (label, widget) in enumerate(widgets):
+        if isinstance(label, (str, ustr)):
+            layout.addRow(label, widget)
+        else:
+            layout.setWidget(idx, QtGui.QFormLayout.LabelRole, label)
+            layout.setWidget(idx, QtGui.QFormLayout.FieldRole, widget)
+
+    return layout
+
+
+def grid(margin, spacing, *widgets):
+    layout = QtGui.QGridLayout()
+    layout.setMargin(defs.no_margin)
+    layout.setSpacing(defs.spacing)
+
+    for row in widgets:
+        item = row[0]
+        if isinstance(item, QtGui.QWidget):
+            layout.addWidget(*row)
+        elif isinstance(item, QtGui.QLayoutItem):
+            layout.addItem(*row)
+
+    return layout
+
+
+def splitter(orientation, *widgets):
+    layout = QtGui.QSplitter()
+    layout.setOrientation(orientation)
+    layout.setHandleWidth(defs.handle_width)
+    layout.setChildrenCollapsible(True)
+    for idx, widget in enumerate(widgets):
+        layout.addWidget(widget)
+        layout.setStretchFactor(idx, 1)
+
+    return layout
 
 
 def prompt(msg, title=None, text=''):
@@ -56,44 +155,64 @@ def create_listwidget_item(text, filename):
     """Creates a QListWidgetItem with text and the icon at filename."""
     item = QtGui.QListWidgetItem()
     item.setIcon(QtGui.QIcon(filename))
+    item.setIconSize(QtCore.QSize(defs.small_icon, defs.small_icon))
     item.setText(text)
     return item
 
 
 class TreeWidgetItem(QtGui.QTreeWidgetItem):
 
-    def __init__(self, text, filename, exists):
+    TYPE = QtGui.QStandardItem.UserType + 101
+
+    def __init__(self, path, icon, deleted):
         QtGui.QTreeWidgetItem.__init__(self)
-        self.exists = exists
-        self.setIcon(0, cached_icon_from_path(filename))
-        self.setText(0, text)
+        self.path = path
+        self.deleted = deleted
+        self.setIcon(0, icons.from_name(icon))
+        self.setText(0, path)
+
+    def type(self):
+        return self.TYPE
 
 
-def create_treewidget_item(text, filename, exists=True):
-    """Creates a QTreeWidgetItem with text and the icon at filename."""
-    return TreeWidgetItem(text, filename, exists)
+def paths_from_indexes(model, indexes,
+                       item_type=TreeWidgetItem.TYPE,
+                       item_filter=None):
+    """Return paths from a list of QStandardItemModel indexes"""
+    items = [model.itemFromIndex(i) for i in indexes]
+    return paths_from_items(items, item_type=item_type, item_filter=item_filter)
 
 
-@memoize
-def cached_icon_from_path(filename):
-    return QtGui.QIcon(filename)
+def paths_from_items(items,
+                     item_type=TreeWidgetItem.TYPE,
+                     item_filter=None):
+    """Return a list of paths from a list of items"""
+    if item_filter is None:
+        item_filter = lambda x: True
+    return [i.path for i in items
+            if i.type() == item_type and item_filter(i)]
 
 
 def confirm(title, text, informative_text, ok_text,
-            icon=None, default=True):
+            icon=None, default=True,
+            cancel_text=None, cancel_icon=None):
     """Confirm that an action should take place"""
-    if icon is None:
-        icon = ok_icon()
-    elif icon and isinstance(icon, ustr):
-        icon = QtGui.QIcon(icon)
     msgbox = QtGui.QMessageBox(active_window())
     msgbox.setWindowModality(Qt.WindowModal)
     msgbox.setWindowTitle(title)
     msgbox.setText(text)
     msgbox.setInformativeText(informative_text)
+
+    icon = icons.mkicon(icon, icons.ok)
     ok = msgbox.addButton(ok_text, QtGui.QMessageBox.ActionRole)
     ok.setIcon(icon)
+
     cancel = msgbox.addButton(QtGui.QMessageBox.Cancel)
+    cancel_icon = icons.mkicon(cancel_icon, icons.close)
+    cancel.setIcon(cancel_icon)
+    if cancel_text:
+        cancel.setText(cancel_text)
+
     if default:
         msgbox.setDefaultButton(ok)
     else:
@@ -114,7 +233,7 @@ class ResizeableMessageBox(QtGui.QMessageBox):
         event_type = event.type()
         if (event_type == QtCore.QEvent.MouseMove or
                 event_type == QtCore.QEvent.MouseButtonPress):
-            maxi = QtCore.QSize(1024*4, 1024*4)
+            maxi = QtCore.QSize(defs.max_size, defs.max_size)
             self.setMaximumSize(maxi)
             text = self.findChild(QtGui.QTextEdit)
             if text is not None:
@@ -155,10 +274,8 @@ def information(title, message=None, details=None, informative_text=None):
         mbox.setInformativeText(informative_text)
     if details:
         mbox.setDetailedText(details)
-    # Render git.svg into a 1-inch wide pixmap
-    pixmap = QtGui.QPixmap(resources.icon('git.svg'))
-    xres = pixmap.physicalDpiX()
-    pixmap = pixmap.scaledToHeight(xres, Qt.SmoothTransformation)
+    # Render into a 1-inch wide pixmap
+    pixmap = icons.cola().pixmap(defs.large_icon)
     mbox.setIconPixmap(pixmap)
     mbox.exec_()
 
@@ -178,57 +295,23 @@ def question(title, msg, default=True):
     return result == QtGui.QMessageBox.Yes
 
 
-def selected_treeitem(tree_widget):
-    """Returns a(id_number, is_selected) for a QTreeWidget."""
-    id_number = None
-    selected = False
-    item = tree_widget.currentItem()
-    if item:
-        id_number = item.data(0, Qt.UserRole).toInt()[0]
-        selected = True
-    return(id_number, selected)
-
-
-def selected_row(list_widget):
-    """Returns a(row_number, is_selected) tuple for a QListWidget."""
-    items = list_widget.selectedItems()
-    if not items:
-        return (-1, False)
-    item = items[0]
-    return (list_widget.row(item), True)
-
-
-def selection_list(listwidget, items):
-    """Returns an array of model items that correspond to
-    the selected QListWidget indices."""
+def tree_selection(tree_item, items):
+    """Returns an array of model items that correspond to the selected
+    QTreeWidgetItem children"""
     selected = []
-    itemcount = listwidget.count()
-    widgetitems = [ listwidget.item(idx) for idx in range(itemcount) ]
-
-    for item, widgetitem in zip(items, widgetitems):
-        if widgetitem.isSelected():
-            selected.append(item)
-    return selected
-
-
-def tree_selection(treeitem, items):
-    """Returns model items that correspond to selected widget indices"""
-    itemcount = treeitem.childCount()
-    widgetitems = [treeitem.child(idx) for idx in range(itemcount)]
-    selected = []
-    for item, widgetitem in zip(items[:len(widgetitems)], widgetitems):
-        if widgetitem.isSelected():
-            selected.append(item)
+    count = min(tree_item.childCount(), len(items))
+    for idx in range(count):
+        if tree_item.child(idx).isSelected():
+            selected.append(items[idx])
 
     return selected
 
 
-def tree_selection_items(item):
+def tree_selection_items(tree_item):
     """Returns selected widget items"""
-    count = item.childCount()
-    childitems = [item.child(idx) for idx in range(count)]
     selected = []
-    for child in childitems:
+    for idx in range(tree_item.childCount()):
+        child = tree_item.child(idx)
         if child.isSelected():
             selected.append(child)
 
@@ -236,7 +319,8 @@ def tree_selection_items(item):
 
 
 def selected_item(list_widget, items):
-    """Returns the selected item in a QListWidget."""
+    """Returns the model item that corresponds to the selected QListWidget
+    row."""
     widget_items = list_widget.selectedItems()
     if not widget_items:
         return None
@@ -249,16 +333,15 @@ def selected_item(list_widget, items):
 
 
 def selected_items(list_widget, items):
-    """Returns the selected item in a QListWidget."""
-    selection = []
-    widget_items = list_widget.selectedItems()
-    if not widget_items:
-        return selection
-    for widget_item in widget_items:
+    """Returns an array of model items that correspond to the selected
+    QListWidget rows."""
+    item_count = len(items)
+    selected = []
+    for widget_item in list_widget.selectedItems():
         row = list_widget.row(widget_item)
-        if row < len(items):
-            selection.append(items[row])
-    return selection
+        if row < item_count:
+            selected.append(items[row])
+    return selected
 
 
 def open_file(title, directory=None):
@@ -279,8 +362,8 @@ def opendir_dialog(title, path):
     flags = (QtGui.QFileDialog.ShowDirsOnly |
              QtGui.QFileDialog.DontResolveSymlinks)
     return ustr(QtGui.QFileDialog
-                        .getExistingDirectory(active_window(),
-                                              title, path, flags))
+                     .getExistingDirectory(active_window(),
+                                           title, path, flags))
 
 
 def save_as(filename, title='Save As...'):
@@ -289,39 +372,70 @@ def save_as(filename, title='Save As...'):
                         .getSaveFileName(active_window(), title, filename))
 
 
-def icon(basename):
-    """Given a basename returns a QIcon from the corresponding cola icon."""
-    return QtGui.QIcon(resources.icon(basename))
+def copy_path(filename, absolute=True):
+    """Copy a filename to the clipboard"""
+    if filename is None:
+        return
+    if absolute:
+        filename = core.abspath(filename)
+    set_clipboard(filename)
 
 
 def set_clipboard(text):
     """Sets the copy/paste buffer to text."""
     if not text:
         return
-    clipboard = QtGui.QApplication.instance().clipboard()
+    clipboard = QtGui.QApplication.clipboard()
     clipboard.setText(text, QtGui.QClipboard.Clipboard)
     clipboard.setText(text, QtGui.QClipboard.Selection)
+    persist_clipboard()
+
+
+def persist_clipboard():
+    """Persist the clipboard
+
+    X11 stores only a reference to the clipboard data.
+    Send a clipboard event to force a copy of the clipboard to occur.
+    This ensures that the clipboard is present after git-cola exits.
+    Otherwise, the reference is destroyed on exit.
+
+    C.f. https://stackoverflow.com/questions/2007103/how-can-i-disable-clear-of-clipboard-on-exit-of-pyqt4-application
+
+    """
+    clipboard = QtGui.QApplication.clipboard()
+    event = QtCore.QEvent(QtCore.QEvent.Clipboard)
+    QtGui.QApplication.sendEvent(clipboard, event)
 
 
 def add_action_bool(widget, text, fn, checked, *shortcuts):
-    action = _add_action(widget, text, fn, connect_action_bool, *shortcuts)
+    tip = text
+    action = _add_action(widget, text, tip, fn, connect_action_bool, *shortcuts)
     action.setCheckable(True)
     action.setChecked(checked)
     return action
 
 
 def add_action(widget, text, fn, *shortcuts):
-    return _add_action(widget, text, fn, connect_action, *shortcuts)
+    tip = text
+    return _add_action(widget, text, tip, fn, connect_action, *shortcuts)
 
 
-def _add_action(widget, text, fn, connect, *shortcuts):
+def add_action_with_status_tip(widget, text, tip, fn, *shortcuts):
+    return _add_action(widget, text, tip, fn, connect_action, *shortcuts)
+
+
+def _add_action(widget, text, tip, fn, connect, *shortcuts):
     action = QtGui.QAction(text, widget)
+    if tip:
+        action.setStatusTip(tip)
     connect(action, fn)
     if shortcuts:
         action.setShortcuts(shortcuts)
-        action.setShortcutContext(Qt.WidgetWithChildrenShortcut)
+        if hasattr(Qt, 'WidgetWithChildrenShortcut'):
+            action.setShortcutContext(Qt.WidgetWithChildrenShortcut)
         widget.addAction(action)
     return action
+
 
 def set_selected_item(widget, idx):
     """Sets a the currently selected item to the item at index idx."""
@@ -335,6 +449,8 @@ def set_selected_item(widget, idx):
 def add_items(widget, items):
     """Adds items to a widget."""
     for item in items:
+        if item is None:
+            continue
         widget.addItem(item)
 
 
@@ -344,150 +460,21 @@ def set_items(widget, items):
     add_items(widget, items)
 
 
-def icon_file(filename, staged=False, untracked=False):
-    """Returns a file path representing a corresponding file path."""
-    exists = True
-    if staged:
-        exists = core.exists(filename)
-        if exists:
-            ifile = resources.icon('staged-item.png')
-        else:
-            ifile = resources.icon('removed.png')
-    elif untracked:
-        ifile = resources.icon('untracked.png')
-    else:
-        (ifile, exists) = utils.file_icon(filename)
-    return (ifile, exists)
 
+def create_treeitem(filename, staged=False, deleted=False, untracked=False):
+    """Given a filename, return a TreeWidgetItem for a status widget
 
-def icon_for_file(filename, staged=False, untracked=False):
-    """Returns a QIcon for a particular file path."""
-    ifile = icon_file(filename, staged=staged, untracked=untracked)
-    return icon(ifile)
+    "staged", "deleted, and "untracked" control which icon is used.
 
-
-def create_treeitem(filename, staged=False, untracked=False, check=True):
-    """Given a filename, return a QListWidgetItem suitable
-    for adding to a QListWidget.  "staged" and "untracked"
-    controls whether to use the appropriate icons."""
-    if check:
-        (ifile, exists) = icon_file(filename,
-                                    staged=staged, untracked=untracked)
-    else:
-        exists = True
-        ifile = resources.icon('staged.png')
-    return create_treewidget_item(filename, ifile, exists=exists)
-
-
-def update_file_icons(widget, items, staged=True,
-                      untracked=False, offset=0):
-    """Populate a QListWidget with custom icon items."""
-    for idx, model_item in enumerate(items):
-        item = widget.item(idx+offset)
-        if item:
-            item.setIcon(icon_for_file(model_item, staged, untracked))
-
-@memoize
-def cached_icon(key):
-    """Maintain a cache of standard icons and return cache entries."""
-    style = QtGui.QApplication.instance().style()
-    return style.standardIcon(key)
-
-
-def dir_icon():
-    """Return a standard icon for a directory."""
-    return cached_icon(QtGui.QStyle.SP_DirIcon)
-
-
-def file_icon():
-    """Return a standard icon for a file."""
-    return cached_icon(QtGui.QStyle.SP_FileIcon)
-
-
-def apply_icon():
-    """Return a standard Apply icon"""
-    return cached_icon(QtGui.QStyle.SP_DialogApplyButton)
-
-
-def new_icon():
-    return cached_icon(QtGui.QStyle.SP_FileDialogNewFolder)
-
-
-def save_icon():
-    """Return a standard Save icon"""
-    return cached_icon(QtGui.QStyle.SP_DialogSaveButton)
-
-
-def ok_icon():
-    """Return a standard Ok icon"""
-    return cached_icon(QtGui.QStyle.SP_DialogOkButton)
-
-
-def open_icon():
-    """Return a standard open directory icon"""
-    return cached_icon(QtGui.QStyle.SP_DirOpenIcon)
-
-
-def help_icon():
-    """Return a standard open directory icon"""
-    return cached_icon(QtGui.QStyle.SP_DialogHelpButton)
-
-
-def add_icon():
-    return icon('add.svg')
-
-
-def remove_icon():
-    return icon('remove.svg')
-
-
-def open_file_icon():
-    return icon('open.svg')
-
-
-def options_icon():
-    """Return a standard open directory icon"""
-    return icon('options.svg')
-
-
-def dir_close_icon():
-    """Return a standard closed directory icon"""
-    return cached_icon(QtGui.QStyle.SP_DirClosedIcon)
-
-
-def titlebar_close_icon():
-    """Return a dock widget close icon"""
-    return cached_icon(QtGui.QStyle.SP_TitleBarCloseButton)
-
-
-def titlebar_normal_icon():
-    """Return a dock widget close icon"""
-    return cached_icon(QtGui.QStyle.SP_TitleBarNormalButton)
-
-
-def git_icon():
-    return icon('git.svg')
-
-
-def reload_icon():
-    """Returna  standard Refresh icon"""
-    return cached_icon(QtGui.QStyle.SP_BrowserReload)
-
-
-def discard_icon():
-    """Return a standard Discard icon"""
-    return cached_icon(QtGui.QStyle.SP_DialogDiscardButton)
-
-
-def close_icon():
-    """Return a standard Close icon"""
-    return cached_icon(QtGui.QStyle.SP_DialogCloseButton)
+    """
+    icon_name = icons.status(filename, deleted, staged, untracked)
+    return TreeWidgetItem(filename, resources.icon(icon_name), deleted=deleted)
 
 
 def add_close_action(widget):
     """Adds close action and shortcuts to a widget."""
     return add_action(widget, N_('Close...'),
-                      widget.close, QtGui.QKeySequence.Close, 'Ctrl+Q')
+                      widget.close, hotkeys.CLOSE, hotkeys.QUIT)
 
 
 def center_on_screen(widget):
@@ -499,22 +486,12 @@ def center_on_screen(widget):
     widget.move(cx - widget.width()//2, cy - widget.height()//2)
 
 
-@memoize
-def theme_icon(name):
-    """Grab an icon from the current theme with a fallback
-
-    Support older versions of Qt by catching AttributeError and
-    falling back to our default icons.
-
-    """
-    try:
-        base, ext = os.path.splitext(name)
-        qicon = QtGui.QIcon.fromTheme(base)
-        if not qicon.isNull():
-            return qicon
-    except AttributeError:
-        pass
-    return icon(name)
+def default_size(parent, width, height):
+    """Return the parent's size, or the provided defaults"""
+    if parent is not None:
+        width = parent.width()
+        height = parent.height()
+    return (width, height)
 
 
 def default_monospace_font():
@@ -527,7 +504,7 @@ def default_monospace_font():
 
 
 def diff_font_str():
-    font_str = gitcfg.instance().get(FONTDIFF)
+    font_str = gitcfg.current().get(prefs.FONTDIFF)
     if font_str is None:
         font = default_monospace_font()
         font_str = ustr(font.toString())
@@ -535,38 +512,65 @@ def diff_font_str():
 
 
 def diff_font():
-    font_str = diff_font_str()
+    return font(diff_font_str())
+
+
+def font(string):
     font = QtGui.QFont()
-    font.fromString(font_str)
+    font.fromString(string)
     return font
 
 
-def create_button(text='', layout=None, tooltip=None, icon=None):
+def create_button(text='', layout=None, tooltip=None, icon=None,
+                  enabled=True, default=False):
     """Create a button, set its title, and add it to the parent."""
     button = QtGui.QPushButton()
     button.setCursor(Qt.PointingHandCursor)
     if text:
         button.setText(text)
-    if icon:
+    if icon is not None:
         button.setIcon(icon)
+        button.setIconSize(QtCore.QSize(defs.small_icon, defs.small_icon))
     if tooltip is not None:
         button.setToolTip(tooltip)
     if layout is not None:
         layout.addWidget(button)
+    if not enabled:
+        button.setEnabled(False)
+    if default:
+        button.setDefault(True)
     return button
 
 
 def create_action_button(tooltip=None, icon=None):
     button = QtGui.QPushButton()
-    button.setFixedSize(QtCore.QSize(16, 16))
     button.setCursor(Qt.PointingHandCursor)
     button.setFlat(True)
     if tooltip is not None:
         button.setToolTip(tooltip)
     if icon is not None:
-        pixmap = icon.pixmap(QtCore.QSize(16, 16))
-        button.setIcon(QtGui.QIcon(pixmap))
+        button.setIcon(icon)
+        button.setIconSize(QtCore.QSize(defs.small_icon, defs.small_icon))
     return button
+
+
+def ok_button(text, default=False, enabled=True):
+    return create_button(text=text, icon=icons.ok(),
+                         default=default, enabled=enabled)
+
+
+def close_button():
+    return create_button(text=N_('Close'), icon=icons.close())
+
+
+def edit_button(enabled=True, default=False):
+    return create_button(text=N_('Edit'), icon=icons.edit(),
+                         enabled=enabled, default=default)
+
+
+def refresh_button(enabled=True, default=False):
+    return create_button(text=N_('Refresh'), icon=icons.sync(),
+                         enabled=enabled, default=default)
 
 
 def hide_button_menu_indicator(button):
@@ -586,6 +590,71 @@ def hide_button_menu_indicator(button):
     button.setStyleSheet(stylesheet % {'name': name})
 
 
+def checkbox(text='', tooltip='', checked=None):
+    cb = QtGui.QCheckBox()
+    if text:
+        cb.setText(text)
+    if tooltip:
+        cb.setToolTip(tooltip)
+    if checked is not None:
+        cb.setChecked(checked)
+
+    url = icons.check_name()
+    style = """
+        QCheckBox::indicator {
+            width: %(size)dpx;
+            height: %(size)dpx;
+        }
+        QCheckBox::indicator::unchecked {
+            border: %(border)dpx solid #999;
+            background: #fff;
+        }
+        QCheckBox::indicator::checked {
+            image: url(%(url)s);
+            border: %(border)dpx solid black;
+            background: #fff;
+        }
+    """ % dict(size=defs.checkbox, border=defs.border, url=url)
+    cb.setStyleSheet(style)
+
+    return cb
+
+
+def radio(text='', tooltip='', checked=None):
+    rb = QtGui.QRadioButton()
+    if text:
+        rb.setText(text)
+    if tooltip:
+        rb.setToolTip(tooltip)
+    if checked is not None:
+        rb.setChecked(checked)
+
+    size = defs.checkbox
+    radius = size / 2
+    border = defs.radio_border
+    url = icons.dot_name()
+    style = """
+        QRadioButton::indicator {
+            width: %(size)dpx;
+            height: %(size)dpx;
+        }
+        QRadioButton::indicator::unchecked {
+            background: #fff;
+            border: %(border)dpx solid #999;
+            border-radius: %(radius)dpx;
+        }
+        QRadioButton::indicator::checked {
+            image: url(%(url)s);
+            background: #fff;
+            border: %(border)dpx solid black;
+            border-radius: %(radius)dpx;
+        }
+    """ % dict(size=size, radius=radius, border=border, url=url)
+    rb.setStyleSheet(style)
+
+    return rb
+
+
 class DockTitleBarWidget(QtGui.QWidget):
 
     def __init__(self, parent, title, stretch=True):
@@ -595,31 +664,24 @@ class DockTitleBarWidget(QtGui.QWidget):
         font.setBold(True)
         label.setFont(font)
         label.setText(title)
-
-        self.setCursor(Qt.OpenHandCursor)
+        label.setCursor(Qt.OpenHandCursor)
 
         self.close_button = create_action_button(
-                tooltip=N_('Close'), icon=titlebar_close_icon())
+            tooltip=N_('Close'), icon=icons.close())
 
         self.toggle_button = create_action_button(
-                tooltip=N_('Detach'), icon=titlebar_normal_icon())
+            tooltip=N_('Detach'), icon=icons.external())
 
-        self.corner_layout = QtGui.QHBoxLayout()
-        self.corner_layout.setMargin(defs.no_margin)
-        self.corner_layout.setSpacing(defs.spacing)
+        self.corner_layout = hbox(defs.no_margin, defs.spacing)
 
-        self.main_layout = QtGui.QHBoxLayout()
-        self.main_layout.setMargin(defs.small_margin)
-        self.main_layout.setSpacing(defs.spacing)
-        self.main_layout.addWidget(label)
-        self.main_layout.addSpacing(defs.spacing)
         if stretch:
-            self.main_layout.addStretch()
-        self.main_layout.addLayout(self.corner_layout)
-        self.main_layout.addSpacing(defs.spacing)
-        self.main_layout.addWidget(self.toggle_button)
-        self.main_layout.addWidget(self.close_button)
+            separator = STRETCH
+        else:
+            separator = SKIPPED
 
+        self.main_layout = hbox(defs.small_margin, defs.spacing,
+                                label, separator, self.corner_layout,
+                                self.toggle_button, self.close_button)
         self.setLayout(self.main_layout)
 
         connect_button(self.toggle_button, self.toggle_floating)
@@ -672,6 +734,7 @@ def create_toolbutton(text=None, layout=None, tooltip=None, icon=None):
     button.setCursor(Qt.PointingHandCursor)
     if icon is not None:
         button.setIcon(icon)
+        button.setIconSize(QtCore.QSize(defs.small_icon, defs.small_icon))
     if text is not None:
         button.setText(text)
         button.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
@@ -682,19 +745,141 @@ def create_toolbutton(text=None, layout=None, tooltip=None, icon=None):
     return button
 
 
+def mimedata_from_paths(paths):
+    """Return mimedata with a list of absolute path URLs"""
+
+    abspaths = [core.abspath(path) for path in paths]
+    urls = [QtCore.QUrl.fromLocalFile(path) for path in abspaths]
+
+    mimedata = QtCore.QMimeData()
+    mimedata.setUrls(urls)
+
+    # The text/x-moz-list format is always included by Qt, and doing
+    # mimedata.removeFormat('text/x-moz-url') has no effect.
+    # C.f. http://www.qtcentre.org/threads/44643-Dragging-text-uri-list-Qt-inserts-garbage
+    #
+    # gnome-terminal expects utf-16 encoded text, but other terminals,
+    # e.g. terminator, prefer utf-8, so allow cola.dragencoding
+    # to override the default.
+    paths_text = subprocess.list2cmdline(abspaths)
+    encoding = gitcfg.current().get('cola.dragencoding', 'utf-16')
+    moz_text = core.encode(paths_text, encoding=encoding)
+    mimedata.setData('text/x-moz-url', moz_text)
+
+    return mimedata
+
+
+def path_mimetypes():
+    return ['text/uri-list', 'text/x-moz-url']
+
+
+class BlockSignals(object):
+    """Context manager for blocking a signals on a widget"""
+
+    def __init__(self, *widgets):
+        self.widgets = widgets
+        self.values = {}
+
+    def __enter__(self):
+        for w in self.widgets:
+            self.values[w] = w.blockSignals(True)
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        for w in self.widgets:
+            w.blockSignals(self.values[w])
+
+
+class Task(QtCore.QRunnable):
+    """Disable auto-deletion to avoid gc issues
+
+    Python's garbage collector will try to double-free the task
+    once it's finished, so disable Qt's auto-deletion as a workaround.
+
+    """
+
+    FINISHED = SIGNAL('TASK_FINISHED')
+    RESULT = SIGNAL('TASK_RESULT')
+
+    def __init__(self, parent, *args, **kwargs):
+        QtCore.QRunnable.__init__(self)
+
+        self.channel = QtCore.QObject(parent)
+        self.result = None
+        self.setAutoDelete(False)
+
+    def run(self):
+        self.result = self.task()
+        self.channel.emit(self.RESULT, self.result)
+        self.done()
+
+    def task(self):
+        pass
+
+    def done(self):
+        self.channel.emit(self.FINISHED, self)
+
+    def connect(self, handler):
+        self.channel.connect(self.channel, self.RESULT,
+                             handler, Qt.QueuedConnection)
+
+
+class SimpleTask(Task):
+    """Run a simple callable as a task"""
+
+    def __init__(self, parent, fn, *args, **kwargs):
+        Task.__init__(self, parent)
+
+        self.fn = fn
+        self.args = args
+        self.kwargs = kwargs
+
+    def task(self):
+        return self.fn(*self.args, **self.kwargs)
+
+
+class RunTask(QtCore.QObject):
+    """Runs QRunnable instances and transfers control when they finish"""
+
+    def __init__(self, parent=None):
+        QtCore.QObject.__init__(self, parent)
+        self.tasks = []
+        self.task_details = {}
+        self.threadpool = QtCore.QThreadPool.globalInstance()
+
+    def start(self, task, progress=None, finish=None):
+        """Start the task and register a callback"""
+        if progress is not None:
+            progress.show()
+        # prevents garbage collection bugs in certain PyQt4 versions
+        self.tasks.append(task)
+        task_id = id(task)
+        self.task_details[task_id] = (progress, finish)
+
+        self.connect(task.channel, Task.FINISHED, self.finish,
+                     Qt.QueuedConnection)
+        self.threadpool.start(task)
+
+    def finish(self, task, *args, **kwargs):
+        task_id = id(task)
+        try:
+            self.tasks.remove(task)
+        except:
+            pass
+        try:
+            progress, finish = self.task_details[task_id]
+            del self.task_details[task_id]
+        except KeyError:
+            finish = progress = None
+
+        if progress is not None:
+            progress.hide()
+
+        if finish is not None:
+            finish(task, *args, **kwargs)
+
+
 # Syntax highlighting
-
-def TERMINAL(pattern):
-    """
-    Denotes that a pattern is the final pattern that should
-    be matched.  If this pattern matches no other formats
-    will be applied, even if they would have matched.
-    """
-    return '__TERMINAL__:%s' % pattern
-
-# Cache the results of re.compile so that we don't keep
-# rebuilding the same regexes whenever stylesheets change
-_RGX_CACHE = {}
 
 def rgba(r, g, b, a=255):
     c = QtGui.QColor()
@@ -702,160 +887,20 @@ def rgba(r, g, b, a=255):
     c.setAlpha(a)
     return c
 
-default_colors = {
-    'color_text':           rgba(0x00, 0x00, 0x00),
-    'color_add':            rgba(0xcd, 0xff, 0xe0),
-    'color_remove':         rgba(0xff, 0xd0, 0xd0),
-    'color_header':         rgba(0xbb, 0xbb, 0xbb),
-}
+
+def RGB(args):
+    return rgba(*args)
 
 
-class GenericSyntaxHighligher(QtGui.QSyntaxHighlighter):
-    def __init__(self, doc, *args, **kwargs):
-        QtGui.QSyntaxHighlighter.__init__(self, doc)
-        for attr, val in default_colors.items():
-            setattr(self, attr, val)
-        self._rules = []
-        self.enabled = True
-        self.generate_rules()
-
-    def generate_rules(self):
-        pass
-
-    def set_enabled(self, enabled):
-        self.enabled = enabled
-
-    def create_rules(self, *rules):
-        if len(rules) % 2:
-            raise Exception('create_rules requires an even '
-                            'number of arguments.')
-        for idx, rule in enumerate(rules):
-            if idx % 2:
-                continue
-            formats = rules[idx+1]
-            terminal = rule.startswith(TERMINAL(''))
-            if terminal:
-                rule = rule[len(TERMINAL('')):]
-            try:
-                regex = _RGX_CACHE[rule]
-            except KeyError:
-                regex = _RGX_CACHE[rule] = re.compile(rule)
-            self._rules.append((regex, formats, terminal,))
-
-    def formats(self, line):
-        matched = []
-        for regex, fmts, terminal in self._rules:
-            match = regex.match(line)
-            if not match:
-                continue
-            matched.append([match, fmts])
-            if terminal:
-                return matched
-        return matched
-
-    def mkformat(self, fg=None, bg=None, bold=False):
-        fmt = QtGui.QTextCharFormat()
-        if fg:
-            fmt.setForeground(fg)
-        if bg:
-            fmt.setBackground(bg)
-        if bold:
-            fmt.setFontWeight(QtGui.QFont.Bold)
-        return fmt
-
-    def highlightBlock(self, qstr):
-        if not self.enabled:
-            return
-        ascii = ustr(qstr)
-        if not ascii:
-            return
-        formats = self.formats(ascii)
-        if not formats:
-            return
-        for match, fmts in formats:
-            start = match.start()
-            groups = match.groups()
-
-            # No groups in the regex, assume this is a single rule
-            # that spans the entire line
-            if not groups:
-                self.setFormat(0, len(ascii), fmts)
-                continue
-
-            # Groups exist, rule is a tuple corresponding to group
-            for grpidx, group in enumerate(groups):
-                # allow empty matches
-                if not group:
-                    continue
-                # allow None as a no-op format
-                length = len(group)
-                if fmts[grpidx]:
-                    self.setFormat(start, start+length,
-                            fmts[grpidx])
-                start += length
-
-    def set_colors(self, colordict):
-        for attr, val in colordict.items():
-            setattr(self, attr, val)
-
-
-class DiffSyntaxHighlighter(GenericSyntaxHighligher):
-    """Implements the diff syntax highlighting
-
-    This class is used by widgets that display diffs.
-
-    """
-    def __init__(self, doc, whitespace=True):
-        self.whitespace = whitespace
-        GenericSyntaxHighligher.__init__(self, doc)
-
-    def generate_rules(self):
-        diff_head = self.mkformat(fg=self.color_header)
-        diff_head_bold = self.mkformat(fg=self.color_header, bold=True)
-
-        diff_add = self.mkformat(fg=self.color_text, bg=self.color_add)
-        diff_remove = self.mkformat(fg=self.color_text, bg=self.color_remove)
-
-        if self.whitespace:
-            bad_ws = self.mkformat(fg=Qt.black, bg=Qt.red)
-
-        # We specify the whitespace rule last so that it is
-        # applied after the diff addition/removal rules.
-        # The rules for the header
-        diff_old_rgx = TERMINAL(r'^--- ')
-        diff_new_rgx = TERMINAL(r'^\+\+\+ ')
-        diff_ctx_rgx = TERMINAL(r'^@@ ')
-
-        diff_hd1_rgx = TERMINAL(r'^diff --git a/.*b/.*')
-        diff_hd2_rgx = TERMINAL(r'^index \S+\.\.\S+')
-        diff_hd3_rgx = TERMINAL(r'^new file mode')
-        diff_hd4_rgx = TERMINAL(r'^deleted file mode')
-        diff_add_rgx = TERMINAL(r'^\+')
-        diff_rmv_rgx = TERMINAL(r'^-')
-        diff_bar_rgx = TERMINAL(r'^([ ]+.*)(\|[ ]+\d+[ ]+[+-]+)$')
-        diff_sts_rgx = (r'(.+\|.+?)(\d+)(.+?)([\+]*?)([-]*?)$')
-        diff_sum_rgx = (r'(\s+\d+ files changed[^\d]*)'
-                        r'(:?\d+ insertions[^\d]*)'
-                        r'(:?\d+ deletions.*)$')
-
-        self.create_rules(diff_old_rgx,     diff_head,
-                          diff_new_rgx,     diff_head,
-                          diff_ctx_rgx,     diff_head_bold,
-                          diff_bar_rgx,     (diff_head_bold, diff_head),
-                          diff_hd1_rgx,     diff_head,
-                          diff_hd2_rgx,     diff_head,
-                          diff_hd3_rgx,     diff_head,
-                          diff_hd4_rgx,     diff_head,
-                          diff_add_rgx,     diff_add,
-                          diff_rmv_rgx,     diff_remove,
-                          diff_sts_rgx,     (None, diff_head,
-                                             None, diff_head,
-                                             diff_head),
-                          diff_sum_rgx,     (diff_head,
-                                             diff_head,
-                                             diff_head))
-        if self.whitespace:
-            self.create_rules(r'(..*?)(\s+)$', (None, bad_ws))
+def make_format(fg=None, bg=None, bold=False):
+    fmt = QtGui.QTextCharFormat()
+    if fg:
+        fmt.setForeground(fg)
+    if bg:
+        fmt.setBackground(bg)
+    if bold:
+        fmt.setFontWeight(QtGui.QFont.Bold)
+    return fmt
 
 
 def install():

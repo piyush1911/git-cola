@@ -2,83 +2,34 @@
 """This module provides miscellaneous utility functions."""
 from __future__ import division, absolute_import, unicode_literals
 
-import mimetypes
 import os
 import random
 import re
 import shlex
 import sys
+import tempfile
 import time
 import traceback
 
 from cola import core
-from cola import resources
-import hashlib
+from cola.decorators import memoize
 
 random.seed(hash(time.time()))
 
 
-KNOWN_FILE_MIME_TYPES = {
-    'text':      'script.png',
-    'image':     'image.png',
-    'python':    'script.png',
-    'ruby':      'script.png',
-    'shell':     'script.png',
-    'perl':      'script.png',
-    'octet':     'binary.png',
-}
-
-KNOWN_FILE_EXTENSION = {
-    '.java':    'script.png',
-    '.groovy':  'script.png',
-    '.cpp':     'script.png',
-    '.c':       'script.png',
-    '.h':       'script.png',
-    '.cxx':     'script.png',
-}
-
-
-def add_parents(path_entry_set):
+def add_parents(paths):
     """Iterate over each item in the set and add its parent directories."""
-    for path in list(path_entry_set):
+    all_paths = set()
+    for path in paths:
         while '//' in path:
             path = path.replace('//', '/')
-        if path not in path_entry_set:
-            path_entry_set.add(path)
+        all_paths.add(path)
         if '/' in path:
             parent_dir = dirname(path)
-            while parent_dir and parent_dir not in path_entry_set:
-                path_entry_set.add(parent_dir)
+            while parent_dir:
+                all_paths.add(parent_dir)
                 parent_dir = dirname(parent_dir)
-    return path_entry_set
-
-
-def ident_file_type(filename, exists):
-    """Returns an icon based on the contents of filename."""
-    if exists:
-        filemimetype = mimetypes.guess_type(filename)
-        if filemimetype[0] != None:
-            for filetype, iconname in KNOWN_FILE_MIME_TYPES.items():
-                if filetype in filemimetype[0].lower():
-                    return iconname
-        filename = filename.lower()
-        for fileext, iconname in KNOWN_FILE_EXTENSION.items():
-            if filename.endswith(fileext):
-                return iconname
-        return 'generic.png'
-    else:
-        return 'removed.png'
-    # Fallback for modified files of an unknown type
-    return 'generic.png'
-
-
-def file_icon(filename):
-    """
-    Returns the full path to an icon file corresponding to
-    filename"s contents.
-    """
-    exists = core.exists(filename)
-    return (resources.icon(ident_file_type(filename, exists)), exists)
+    return all_paths
 
 
 def format_exception(e):
@@ -227,21 +178,16 @@ else:
         return [core.decode(arg) for arg in _shell_split(s)]
 
 
-def tmp_dir():
-    # Allow TMPDIR/TMP with a fallback to /tmp
-    return core.getenv('TMP', core.getenv('TMPDIR', '/tmp'))
+def tmp_filename(label):
+    label = label.replace('/', '-').replace('\\', '-')
+    fd = tempfile.NamedTemporaryFile(dir=tmpdir(), prefix=label+'-')
+    fd.close()
+    return fd.name
 
 
-def tmp_file_pattern():
-    return os.path.join(tmp_dir(), 'git-cola-%s-.*' % os.getpid())
-
-
-def tmp_filename(prefix):
-    randstr = ''.join([chr(random.randint(ord('a'), ord('z')))
-                        for i in range(7)])
-    prefix = prefix.replace('/', '-').replace('\\', '-')
-    basename = 'git-cola-%s-%s-%s' % (os.getpid(), randstr, prefix)
-    return os.path.join(tmp_dir(), basename)
+@memoize
+def tmpdir():
+    return tempfile.mkdtemp(prefix='git-cola-')
 
 
 def is_linux():
@@ -264,8 +210,37 @@ def is_win32():
     return sys.platform == 'win32' or sys.platform == 'cygwin'
 
 
-def checksum(path):
-    """Return a cheap md5 hexdigest for a path."""
-    md5 = hashlib.new('md5')
-    md5.update(open(path, 'rb').read())
-    return md5.hexdigest()
+def expandpath(path):
+    """Expand ~user/ and environment $variables"""
+    path = os.path.expandvars(path)
+    if path.startswith('~'):
+        path = os.path.expanduser(path)
+    return path
+
+
+class Group(object):
+    """Operate on a collection of objects as a single unit"""
+
+    def __init__(self, *members):
+        self._members = members
+
+    def __getattr__(self, name):
+        """Return a function that relays calls to the group"""
+        def relay(*args, **kwargs):
+            for member in self._members:
+                method = getattr(member, name)
+                method(*args, **kwargs)
+        setattr(self, name, relay)
+        return relay
+
+
+class Proxy(object):
+    """Wrap an object and override attributes"""
+
+    def __init__(self, obj, **overrides):
+        self._obj = obj
+        for k, v in overrides.items():
+            setattr(self, k, v)
+
+    def __getattr__(self, name):
+        return getattr(self._obj, name)

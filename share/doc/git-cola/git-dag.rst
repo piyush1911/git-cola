@@ -15,10 +15,6 @@ graphical interface.
 OPTIONS
 =======
 
--g, --git-path <path>
----------------------
-Specifies the path to the 'git' binary.
-
 --prompt
 --------
 Prompt for a Git repository instead of using the current directory.
@@ -31,6 +27,10 @@ Defaults to the current directory.
 --version
 ---------
 Print the `git dag` version and exit.
+
+-h, --help
+----------
+Show usage and optional arguments.
 
 Log Options
 ===========

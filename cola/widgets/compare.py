@@ -1,13 +1,14 @@
 """Provides dialogs for comparing branches and commits."""
 from __future__ import division, absolute_import, unicode_literals
 
-from PyQt4 import QtCore
 from PyQt4 import QtGui
+from PyQt4.QtCore import Qt
 from PyQt4.QtCore import SIGNAL
 
 from cola import qtutils
 from cola import difftool
 from cola import gitcmds
+from cola import icons
 from cola.i18n import N_
 from cola.qtutils import connect_button
 from cola.widgets import defs
@@ -16,6 +17,7 @@ from cola.compat import ustr
 
 
 class FileItem(QtGui.QTreeWidgetItem):
+
     def __init__(self, path, icon):
         QtGui.QTreeWidgetItem.__init__(self, [path])
         self.path = path
@@ -39,67 +41,60 @@ class CompareBranchesDialog(standard.Dialog):
         self.SANDBOX = N_('*** Sandbox ***')
         self.LOCAL = N_('Local')
 
+        self.setWindowTitle(N_('Branch Diff Viewer'))
+
         self.remote_branches = gitcmds.branch_list(remote=True)
         self.local_branches = gitcmds.branch_list(remote=False)
 
-        self.setWindowTitle(N_('Branch Diff Viewer'))
-        self.resize(658, 350)
+        self.top_widget = QtGui.QWidget()
+        self.bottom_widget = QtGui.QWidget()
 
-        self.main_layt = QtGui.QVBoxLayout(self)
-        self.main_layt.setMargin(defs.margin)
-        self.main_layt.setSpacing(defs.spacing)
-
-        self.splitter = QtGui.QSplitter(self)
-        self.splitter.setOrientation(QtCore.Qt.Vertical)
-        self.splitter.setHandleWidth(defs.handle_width)
-
-        self.top_widget = QtGui.QWidget(self.splitter)
-
-        self.top_grid_layt = QtGui.QGridLayout(self.top_widget)
-        self.top_grid_layt.setMargin(0)
-        self.top_grid_layt.setSpacing(defs.spacing)
-
-        self.left_combo = QtGui.QComboBox(self.top_widget)
+        self.left_combo = QtGui.QComboBox()
         self.left_combo.addItem(N_('Local'))
         self.left_combo.addItem(N_('Remote'))
         self.left_combo.setCurrentIndex(0)
-        self.top_grid_layt.addWidget(self.left_combo, 0, 0, 1, 1)
 
-        self.right_combo = QtGui.QComboBox(self.top_widget)
+        self.right_combo = QtGui.QComboBox()
         self.right_combo.addItem(N_('Local'))
         self.right_combo.addItem(N_('Remote'))
         self.right_combo.setCurrentIndex(1)
-        self.top_grid_layt.addWidget(self.right_combo, 0, 1, 1, 1)
 
-        self.left_list = QtGui.QListWidget(self.top_widget)
-        self.top_grid_layt.addWidget(self.left_list, 1, 0, 1, 1)
-
-        self.right_list = QtGui.QListWidget(self.top_widget)
-        self.top_grid_layt.addWidget(self.right_list, 1, 1, 1, 1)
-
-        self.bottom_widget = QtGui.QWidget(self.splitter)
-        self.bottom_grid_layt = QtGui.QGridLayout(self.bottom_widget)
-        self.bottom_grid_layt.setMargin(0)
-        self.bottom_grid_layt.setSpacing(defs.button_spacing)
+        self.left_list = QtGui.QListWidget()
+        self.right_list = QtGui.QListWidget()
 
         self.button_spacer = QtGui.QSpacerItem(1, 1,
-                                                QtGui.QSizePolicy.Expanding,
-                                                QtGui.QSizePolicy.Minimum)
-        self.bottom_grid_layt.addItem(self.button_spacer, 1, 1, 1, 1)
+                                               QtGui.QSizePolicy.Expanding,
+                                               QtGui.QSizePolicy.Minimum)
 
-        self.button_compare = QtGui.QPushButton(self.bottom_widget)
-        self.button_compare.setText(N_('Compare'))
-        self.bottom_grid_layt.addWidget(self.button_compare, 1, 2, 1, 1)
+        self.button_compare = qtutils.create_button(text=N_('Compare'),
+                                                    icon=icons.diff())
+        self.button_close = qtutils.close_button()
 
-        self.button_close = QtGui.QPushButton(self.bottom_widget)
-        self.button_close.setText(N_('Close'))
-        self.bottom_grid_layt.addWidget(self.button_close, 1, 3, 1, 1)
-
-        self.diff_files = standard.TreeWidget(self.bottom_widget)
+        self.diff_files = standard.TreeWidget()
         self.diff_files.headerItem().setText(0, N_('File Differences'))
 
-        self.bottom_grid_layt.addWidget(self.diff_files, 0, 0, 1, 4)
-        self.main_layt.addWidget(self.splitter)
+        self.top_grid_layout = qtutils.grid(
+                defs.no_margin, defs.spacing,
+                (self.left_combo, 0, 0, 1, 1),
+                (self.left_list, 1, 0, 1, 1),
+                (self.right_combo, 0, 1, 1, 1),
+                (self.right_list, 1, 1, 1, 1))
+        self.top_widget.setLayout(self.top_grid_layout)
+
+        self.bottom_grid_layout = qtutils.grid(
+                defs.no_margin, defs.spacing,
+                (self.diff_files, 0, 0, 1, 4),
+                (self.button_spacer, 1, 1, 1, 1),
+                (self.button_compare, 1, 2, 1, 1),
+                (self.button_close, 1, 3, 1, 1))
+        self.bottom_widget.setLayout(self.bottom_grid_layout)
+
+        self.splitter = qtutils.splitter(Qt.Vertical,
+                                         self.top_widget, self.bottom_widget)
+
+        self.main_layout = qtutils.vbox(defs.margin, defs.spacing, self.splitter)
+        self.setLayout(self.main_layout)
+        self.resize(658, 350)
 
         connect_button(self.button_close, self.accept)
         connect_button(self.button_compare, self.compare)
@@ -187,7 +182,7 @@ class CompareBranchesDialog(standard.Dialog):
 
     def set_diff_files(self, files):
         mk = FileItem
-        icon = qtutils.icon('script.png')
+        icon = icons.file_code()
         self.diff_files.clear()
         self.diff_files.addTopLevelItems([mk(f, icon) for f in files])
 
@@ -255,7 +250,11 @@ class CompareBranchesDialog(standard.Dialog):
     def compare_file(self, filename):
         """Initiates the difftool session"""
         if self.use_sandbox:
-            arg = self.diff_arg
+            left = self.diff_arg[0]
+            if len(self.diff_arg) > 1:
+                right = self.diff_arg[1]
+            else:
+                right = None
         else:
-            arg = (self.start, self.end)
-        difftool.launch(arg + ('--', filename))
+            left, right = self.start, self.end
+        difftool.launch(left=left, right=right, paths=[filename])

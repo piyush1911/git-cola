@@ -9,6 +9,7 @@ import threading
 from os.path import join
 
 from cola import core
+from cola.compat import ustr, PY3
 from cola.decorators import memoize
 from cola.interaction import Interaction
 
@@ -145,7 +146,8 @@ class Git(object):
                 _raw=False,
                 _stdin=None,
                 _stderr=subprocess.PIPE,
-                _stdout=subprocess.PIPE):
+                _stdout=subprocess.PIPE,
+                _readonly=False):
         """
         Execute a command and returns its output
 
@@ -173,16 +175,26 @@ class Git(object):
             startupinfo.wShowWindow = subprocess.SW_HIDE
             extra['startupinfo'] = startupinfo
 
+        if hasattr(os, 'setsid'):
+            # SSH uses the SSH_ASKPASS variable only if the process is really
+            # detached from the TTY (stdin redirection and setting the
+            # SSH_ASKPASS environment variable is not enough).  To detach a
+            # process from the console it should fork and call os.setsid().
+            extra['preexec_fn'] = os.setsid
+
         # Start the process
         # Guard against thread-unsafe .git/index.lock files
-        INDEX_LOCK.acquire()
+        if not _readonly:
+            INDEX_LOCK.acquire()
         status, out, err = core.run_command(command,
                                             cwd=_cwd,
                                             encoding=_encoding,
                                             stdin=_stdin, stdout=_stdout, stderr=_stderr,
                                             **extra)
         # Let the next thread in
-        INDEX_LOCK.release()
+        if not _readonly:
+            INDEX_LOCK.release()
+
         if not _raw and out is not None:
             out = out.rstrip('\n')
 
@@ -203,27 +215,54 @@ class Git(object):
         return (status, out, err)
 
     def transform_kwargs(self, **kwargs):
-        """Transform kwargs into git command line options"""
+        """Transform kwargs into git command line options
+
+        Callers can assume the following behavior:
+
+        Passing foo=None ignores foo, so that callers can
+        use default values of None that are ignored unless
+        set explicitly.
+
+        Passing foo=False ignore foo, for the same reason.
+
+        Passing foo={string-or-number} results in ['--foo=<value>']
+        in the resulting arguments.
+
+        """
         args = []
+        types_to_stringify = (ustr, int, float, str)
+        if not PY3:
+            types_to_stringify += (long,)
+
         for k, v in kwargs.items():
             if len(k) == 1:
-                if v is True:
-                    args.append("-%s" % k)
-                elif type(v) is not bool:
-                    args.append("-%s%s" % (k, v))
+                dashes = '-'
+                join = ''
             else:
-                if v is True:
-                    args.append("--%s" % dashify(k))
-                elif type(v) is not bool:
-                    args.append("--%s=%s" % (dashify(k), v))
+                dashes = '--'
+                join = '='
+            type_of_value = type(v)
+            if v is True:
+                args.append('%s%s' % (dashes, dashify(k)))
+            elif type_of_value in types_to_stringify:
+                args.append('%s%s%s%s' % (dashes, dashify(k), join, v))
+
         return args
 
     def git(self, cmd, *args, **kwargs):
         # Handle optional arguments prior to calling transform_kwargs
         # otherwise they'll end up in args, which is bad.
         _kwargs = dict(_cwd=self._git_cwd)
-        execute_kwargs = ('_cwd', '_decode', '_encoding',
-                '_stdin', '_stdout', '_stderr', '_raw')
+        execute_kwargs = (
+                '_cwd',
+                '_decode',
+                '_encoding',
+                '_stdin',
+                '_stdout',
+                '_stderr',
+                '_raw',
+                '_readonly',
+                )
         for kwarg in execute_kwargs:
             if kwarg in kwargs:
                 _kwargs[kwarg] = kwargs.pop(kwarg)
@@ -237,19 +276,28 @@ class Git(object):
         except OSError as e:
             if e.errno != errno.ENOENT:
                 raise e
-            core.stderr("ERROR: Unable to execute 'git'.\n"
-                        "Ensure that 'git' is in your $PATH, or specify the "
-                        "path to 'git' using the --git-path argument.")
+            core.stderr("error: unable to execute 'git'\n"
+                        "error: please ensure that 'git' is in your $PATH")
+            if sys.platform == 'win32':
+                hint = ('\n'
+                        'hint: If you have Git installed in a custom location, e.g.\n'
+                        'hint: C:\\Tools\\Git, then you can create a file at\n'
+                        'hint: ~/.config/git-cola/git-bindir with the following text\n'
+                        'hint: and git-cola will add the specified location to your $PATH\n'
+                        'hint: automatically when starting cola:\n'
+                        'hint:\n'
+                        'hint: C:\\Tools\\Git\\bin\n')
+                core.stderr(hint)
             sys.exit(1)
 
 
 @memoize
-def instance():
+def current():
     """Return the Git singleton"""
     return Git()
 
 
-git = instance()
+git = current()
 """
 Git command singleton
 

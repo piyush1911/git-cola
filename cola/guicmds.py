@@ -9,7 +9,9 @@ from cola import cmds
 from cola import core
 from cola import difftool
 from cola import gitcmds
+from cola import icons
 from cola import qtutils
+from cola import utils
 from cola.git import git
 from cola.i18n import N_
 from cola.interaction import Interaction
@@ -22,7 +24,8 @@ from cola.compat import ustr
 
 def delete_branch():
     """Launch the 'Delete Branch' dialog."""
-    branch = choose_branch(N_('Delete Branch'), N_('Delete'))
+    icon = icons.discard()
+    branch = choose_branch(N_('Delete Branch'), N_('Delete'), icon=icon)
     if not branch:
         return
     cmds.do(cmds.DeleteBranch, branch)
@@ -30,7 +33,8 @@ def delete_branch():
 
 def delete_remote_branch():
     """Launch the 'Delete Remote Branch' dialog."""
-    branch = choose_remote_branch(N_('Delete Remote Branch'), N_('Delete'))
+    branch = choose_remote_branch(N_('Delete Remote Branch'), N_('Delete'),
+                                  icon=icons.discard())
     if not branch:
         return
     rgx = re.compile(r'^(?P<remote>[^/]+)/(?P<branch>.+)$')
@@ -58,7 +62,7 @@ def browse_other():
 
 def checkout_branch():
     """Launch the 'Checkout Branch' dialog."""
-    branch = choose_branch(N_('Checkout Branch'), N_('Checkout'))
+    branch = choose_potential_branch(N_('Checkout Branch'), N_('Checkout'))
     if not branch:
         return
     cmds.do(cmds.CheckoutBranch, branch)
@@ -122,15 +126,15 @@ def open_new_repo():
     cmds.do(cmds.OpenRepo, dirname)
 
 
-def clone_repo(spawn=True):
+def prompt_for_clone():
     """
-    Present GUI controls for cloning a repository
+    Present a GUI for cloning a repository.
 
-    A new cola session is invoked when 'spawn' is True.
+    Returns the target directory and URL
 
     """
     url, ok = qtutils.prompt(N_('Path or URL to clone (Env. $VARS okay)'))
-    url = os.path.expandvars(url)
+    url = utils.expandpath(url)
     if not ok or not url:
         return None
     try:
@@ -167,15 +171,14 @@ def clone_repo(spawn=True):
         # An existing path can be specified
         msg = (N_('"%s" already exists, cola will create a new directory') %
                destdir)
-        Interaction.information('Directory Exists', msg)
+        Interaction.information(N_('Directory Exists'), msg)
 
     # Make sure the new destdir doesn't exist
     while core.exists(destdir):
         destdir = olddestdir + str(count)
         count += 1
-    if cmds.do(cmds.Clone, url, destdir, spawn=spawn):
-        return destdir
-    return None
+
+    return url, destdir
 
 
 def export_patches():
@@ -223,24 +226,29 @@ def load_commitmsg():
         cmds.do(cmds.LoadCommitMessageFromFile, filename)
 
 
-def choose_from_dialog(get, title, button_text, default):
+def choose_from_dialog(get, title, button_text, default, icon=None):
     parent = qtutils.active_window()
-    return get(title, button_text, parent, default=default)
+    return get(title, button_text, parent, default=default, icon=icon)
 
 
-def choose_ref(title, button_text, default=None):
+def choose_ref(title, button_text, default=None, icon=None):
     return choose_from_dialog(completion.GitRefDialog.get,
-                              title, button_text, default)
+                              title, button_text, default, icon=icon)
 
 
-def choose_branch(title, button_text, default=None):
+def choose_branch(title, button_text, default=None, icon=None):
     return choose_from_dialog(completion.GitBranchDialog.get,
-                              title, button_text, default)
+                              title, button_text, default, icon=icon)
 
 
-def choose_remote_branch(title, button_text, default=None):
+def choose_potential_branch(title, button_text, default=None, icon=None):
+    return choose_from_dialog(completion.GitPotentialBranchDialog.get,
+                              title, button_text, default, icon=icon)
+
+
+def choose_remote_branch(title, button_text, default=None, icon=None):
     return choose_from_dialog(completion.GitRemoteBranchDialog.get,
-                              title, button_text, default)
+                              title, button_text, default, icon=icon)
 
 
 def review_branch():
@@ -250,3 +258,51 @@ def review_branch():
         return
     merge_base = gitcmds.merge_base_parent(branch)
     difftool.diff_commits(qtutils.active_window(), merge_base, branch)
+
+
+class CloneTask(qtutils.Task):
+    """Clones a Git repository"""
+
+    def __init__(self, url, destdir, spawn, parent):
+        qtutils.Task.__init__(self, parent)
+        self.url = url
+        self.destdir = destdir
+        self.spawn = spawn
+        self.cmd = None
+
+    def task(self):
+        """Runs the model action and captures the result"""
+        self.cmd = cmds.do(cmds.Clone, self.url, self.destdir, spawn=self.spawn)
+        return self.cmd
+
+
+def clone_repo(parent, runtask, progress, finish, spawn):
+    """Clone a repostiory asynchronously with progress animation"""
+    result = prompt_for_clone()
+    if result is None:
+        return
+    # Use a thread to update in the background
+    url, destdir = result
+    progress.set_details(N_('Clone Repository'),
+                         N_('Cloning repository at %s') % url)
+    task = CloneTask(url, destdir, spawn, parent)
+    runtask.start(task, finish=finish, progress=progress)
+
+
+def report_clone_repo_errors(task):
+    """Report errors from the clone task if they exist"""
+    if task.cmd is None or task.cmd.ok:
+        return
+    Interaction.critical(task.cmd.error_message,
+                         message=task.cmd.error_message,
+                         details=task.cmd.error_details)
+
+def rename_branch():
+    """Launch the 'Rename Branch' dialogs."""
+    branch = choose_branch(N_('Rename Existing Branch'), N_('Select'))
+    if not branch:
+        return
+    new_branch = choose_branch(N_('Enter Branch New Name'), N_('Rename'))
+    if not new_branch:
+        return
+    cmds.do(cmds.RenameBranch, branch, new_branch)

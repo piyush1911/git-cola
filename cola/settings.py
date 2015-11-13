@@ -90,15 +90,20 @@ class Settings(object):
             self.bookmarks.append(bookmark)
 
     def remove_bookmark(self, bookmark):
-        """Removes a bookmark from the saved settings"""
+        """Remove a bookmark"""
         if bookmark in self.bookmarks:
             self.bookmarks.remove(bookmark)
+
+    def remove_recent(self, entry):
+        """Removes an item from the recent items list"""
+        if entry in self.recent:
+            self.recent.remove(entry)
 
     def add_recent(self, entry):
         if entry in self.recent:
             self.recent.remove(entry)
         self.recent.insert(0, entry)
-        if len(self.recent) > 8:
+        if len(self.recent) >= 8:
             self.recent.pop()
 
     def path(self):
@@ -152,16 +157,12 @@ class Session(Settings):
 
     _sessions_dir = resources.config_home('sessions')
 
-    git_path = property(lambda self: self.values['git_path'])
     repo = property(lambda self: self.values['repo'])
 
-    def __init__(self, session_id, repo=None, git_path=None):
+    def __init__(self, session_id, repo=None):
         Settings.__init__(self)
         self.session_id = session_id
-        self.values.update({
-                'git_path': git_path,
-                'repo': repo,
-        })
+        self.values.update({'repo': repo})
 
     def path(self):
         return os.path.join(self._sessions_dir, self.session_id)

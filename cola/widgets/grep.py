@@ -6,16 +6,18 @@ from PyQt4.QtCore import Qt
 from PyQt4.QtCore import SIGNAL
 
 from cola import cmds
+from cola import hotkeys
 from cola import utils
 from cola import qtutils
 from cola.cmds import do
+from cola.compat import ustr
 from cola.git import git
 from cola.i18n import N_
 from cola.qtutils import diff_font
+from cola.utils import Group
 from cola.widgets import defs
 from cola.widgets.standard import Dialog
-from cola.widgets.text import HintedTextView, HintedLineEdit
-from cola.compat import ustr
+from cola.widgets.text import VimHintedTextView, HintedLineEdit
 
 
 def grep():
@@ -57,7 +59,8 @@ class GrepThread(QtCore.QThread):
             args = [query]
         status, out, err = git.grep(self.regexp_mode, n=True, *args)
         if query == self.query:
-            self.emit(SIGNAL('result'), status, out, err)
+            self.emit(SIGNAL('result(PyQt_PyObject,PyQt_PyObject,PyQt_PyObject)'),
+                      status, out, err)
         else:
             self.run()
 
@@ -71,11 +74,17 @@ class Grep(Dialog):
         if parent is not None:
             self.setWindowModality(Qt.WindowModal)
 
+        self.edit_action = qtutils.add_action(
+                self, N_('Edit'), self.edit, hotkeys.EDIT)
+
+        self.refresh_action = qtutils.add_action(
+                self, N_('Refresh'), self.search, *hotkeys.REFRESH_HOTKEYS)
+
         self.input_label = QtGui.QLabel('git grep')
         self.input_label.setFont(diff_font())
 
         self.input_txt = HintedLineEdit(N_('command-line arguments'), self)
-        self.input_txt.enable_hint(True)
+        self.input_txt.hint.enable(True)
 
         self.regexp_combo = combo = QtGui.QComboBox()
         combo.setToolTip(N_('Choose the "git grep" regular expression mode'))
@@ -97,56 +106,45 @@ class Grep(Dialog):
         combo.setItemData(2, '--fixed-strings', Qt.UserRole)
 
         self.result_txt = GrepTextView(N_('grep result...'), self)
-        self.result_txt.enable_hint(True)
+        self.result_txt.hint.enable(True)
 
-        self.edit_button = QtGui.QPushButton(N_('Edit'))
-        self.edit_button.setIcon(qtutils.open_file_icon())
-        self.edit_button.setEnabled(False)
-        self.edit_button.setShortcut(cmds.Edit.SHORTCUT)
+        self.edit_button = qtutils.edit_button()
+        qtutils.button_action(self.edit_button, self.edit_action)
 
-        self.refresh_button = QtGui.QPushButton(N_('Refresh'))
-        self.refresh_button.setIcon(qtutils.reload_icon())
-        self.refresh_button.setShortcut(QtGui.QKeySequence.Refresh)
+        self.refresh_button = qtutils.refresh_button()
+        qtutils.button_action(self.refresh_button, self.refresh_action)
 
-        self.shell_checkbox = QtGui.QCheckBox(N_('Shell arguments'))
-        self.shell_checkbox.setToolTip(
-                N_('Parse arguments using a shell.\n'
-                   'Queries with spaces will require "double quotes".'))
-        self.shell_checkbox.setChecked(False)
+        text = N_('Shell arguments')
+        tooltip = N_('Parse arguments using a shell.\n'
+                     'Queries with spaces will require "double quotes".')
+        self.shell_checkbox = qtutils.checkbox(text=text, tooltip=tooltip,
+                                               checked=False)
+        self.close_button = qtutils.close_button()
 
-        self.close_button = QtGui.QPushButton(N_('Close'))
+        self.refresh_group = Group(self.refresh_action, self.refresh_button)
+        self.refresh_group.setEnabled(False)
 
-        self.input_layout = QtGui.QHBoxLayout()
-        self.input_layout.setMargin(0)
-        self.input_layout.setSpacing(defs.button_spacing)
+        self.edit_group = Group(self.edit_action, self.edit_button)
+        self.edit_group.setEnabled(False)
 
-        self.bottom_layout = QtGui.QHBoxLayout()
-        self.bottom_layout.setMargin(0)
-        self.bottom_layout.setSpacing(defs.button_spacing)
+        self.input_layout = qtutils.hbox(defs.no_margin, defs.button_spacing,
+                                         self.input_label, self.input_txt,
+                                         self.regexp_combo)
 
-        self.mainlayout = QtGui.QVBoxLayout()
-        self.mainlayout.setMargin(defs.margin)
-        self.mainlayout.setSpacing(defs.spacing)
+        self.bottom_layout = qtutils.hbox(defs.no_margin, defs.button_spacing,
+                                          self.edit_button, self.refresh_button,
+                                          self.shell_checkbox, qtutils.STRETCH,
+                                          self.close_button)
 
-        self.input_layout.addWidget(self.input_label)
-        self.input_layout.addWidget(self.input_txt)
-        self.input_layout.addWidget(self.regexp_combo)
-
-        self.bottom_layout.addWidget(self.edit_button)
-        self.bottom_layout.addWidget(self.refresh_button)
-        self.bottom_layout.addWidget(self.shell_checkbox)
-        self.bottom_layout.addStretch()
-        self.bottom_layout.addWidget(self.close_button)
-
-        self.mainlayout.addLayout(self.input_layout)
-        self.mainlayout.addWidget(self.result_txt)
-        self.mainlayout.addLayout(self.bottom_layout)
+        self.mainlayout = qtutils.vbox(defs.margin, defs.no_spacing,
+                                       self.input_layout, self.result_txt,
+                                       self.bottom_layout)
         self.setLayout(self.mainlayout)
 
-        self.grep_thread = GrepThread(self)
-
-        self.connect(self.grep_thread, SIGNAL('result'),
-                     self.process_result)
+        self.worker_thread = GrepThread(self)
+        self.connect(self.worker_thread,
+                     SIGNAL('result(PyQt_PyObject,PyQt_PyObject,PyQt_PyObject)'),
+                     self.process_result, Qt.QueuedConnection)
 
         self.connect(self.input_txt, SIGNAL('textChanged(QString)'),
                      lambda s: self.search())
@@ -157,20 +155,24 @@ class Grep(Dialog):
         self.connect(self.result_txt, SIGNAL('leave()'),
                      lambda: self.input_txt.setFocus())
 
-        qtutils.add_action(self.input_txt, 'FocusResults',
-                           lambda: self.result_txt.setFocus(),
-                           Qt.Key_Down, Qt.Key_Enter, Qt.Key_Return)
-        qtutils.add_action(self, 'FocusSearch',
-                           lambda: self.input_txt.setFocus(),
-                           'Ctrl+l')
-        qtutils.connect_button(self.edit_button, self.edit)
-        qtutils.connect_button(self.refresh_button, self.search)
+        qtutils.add_action(self.input_txt, 'Focus Results', self.focus_results,
+                           hotkeys.DOWN, *hotkeys.ACCEPT)
+        qtutils.add_action(self, 'Focus Input', self.focus_input, hotkeys.FOCUS)
+
         qtutils.connect_toggle(self.shell_checkbox, lambda x: self.search())
         qtutils.connect_button(self.close_button, self.close)
         qtutils.add_close_action(self)
 
         if not self.restore_state():
-            self.resize(666, 420)
+            width, height = qtutils.default_size(parent, 666, 420)
+            self.resize(width, height)
+
+    def focus_input(self):
+        self.input_txt.setFocus()
+        self.input_txt.selectAll()
+
+    def focus_results(self):
+        self.result_txt.setFocus()
 
     def done(self, exit_code):
         self.save_state()
@@ -182,20 +184,19 @@ class Grep(Dialog):
         return ustr(data)
 
     def search(self):
-        self.edit_button.setEnabled(False)
-        self.refresh_button.setEnabled(False)
+        self.edit_group.setEnabled(False)
+        self.refresh_group.setEnabled(False)
         query = self.input_txt.value()
         if len(query) < 2:
             self.result_txt.set_value('')
             return
-        self.grep_thread.query = query
-        self.grep_thread.shell = self.shell_checkbox.isChecked()
-        self.grep_thread.regexp_mode = self.regexp_mode()
-        self.grep_thread.start()
+        self.worker_thread.query = query
+        self.worker_thread.shell = self.shell_checkbox.isChecked()
+        self.worker_thread.regexp_mode = self.regexp_mode()
+        self.worker_thread.start()
 
     def search_for(self, txt):
         self.input_txt.set_value(txt)
-        self.search()
 
     def text_scroll(self):
         scrollbar = self.result_txt.verticalScrollBar()
@@ -234,59 +235,21 @@ class Grep(Dialog):
         self.set_text_scroll(scroll)
         self.set_text_offset(offset)
 
-        self.edit_button.setEnabled(status == 0)
-        self.refresh_button.setEnabled(status == 0)
+        enabled = status == 0
+        self.edit_group.setEnabled(enabled)
+        self.refresh_group.setEnabled(True)
 
     def edit(self):
         goto_grep(self.result_txt.selected_line()),
 
 
-class GrepTextView(HintedTextView):
+class GrepTextView(VimHintedTextView):
 
     def __init__(self, hint, parent):
-        HintedTextView.__init__(self, hint, parent)
+        VimHintedTextView.__init__(self, hint=hint, parent=parent)
+
         self.goto_action = qtutils.add_action(self, 'Launch Editor', self.edit)
-        self.goto_action.setShortcut(cmds.Edit.SHORTCUT)
-
-        qtutils.add_action(self, 'Up',
-                lambda: self.move(QtGui.QTextCursor.Up),
-                Qt.Key_K)
-
-        qtutils.add_action(self, 'Down',
-                lambda: self.move(QtGui.QTextCursor.Down),
-                Qt.Key_J)
-
-        qtutils.add_action(self, 'Left',
-                lambda: self.move(QtGui.QTextCursor.Left),
-                Qt.Key_H)
-
-        qtutils.add_action(self, 'Right',
-                lambda: self.move(QtGui.QTextCursor.Right),
-                Qt.Key_L)
-
-        qtutils.add_action(self, 'StartOfLine',
-                lambda: self.move(QtGui.QTextCursor.StartOfLine),
-                Qt.Key_0)
-
-        qtutils.add_action(self, 'EndOfLine',
-                lambda: self.move(QtGui.QTextCursor.EndOfLine),
-                Qt.Key_Dollar)
-
-        qtutils.add_action(self, 'WordLeft',
-                lambda: self.move(QtGui.QTextCursor.WordLeft),
-                Qt.Key_B)
-
-        qtutils.add_action(self, 'WordRight',
-                lambda: self.move(QtGui.QTextCursor.WordRight),
-                Qt.Key_W)
-
-        qtutils.add_action(self, 'PageUp',
-                lambda: self.page(-self.height()//2),
-                'Shift+Space')
-
-        qtutils.add_action(self, 'PageDown',
-                lambda: self.page(self.height()//2),
-                Qt.Key_Space)
+        self.goto_action.setShortcut(hotkeys.EDIT)
 
     def contextMenuEvent(self, event):
         menu = self.createStandardContextMenu(event.pos())
@@ -296,42 +259,3 @@ class GrepTextView(HintedTextView):
 
     def edit(self):
         goto_grep(self.selected_line())
-
-    def page(self, offset):
-        rect = self.cursorRect()
-        x = rect.x()
-        y = rect.y() + offset
-        new_cursor = self.cursorForPosition(QtCore.QPoint(x, y))
-        if new_cursor is not None:
-            self.set_text_cursor(new_cursor)
-
-    def set_text_cursor(self, cursor):
-        self.setTextCursor(cursor)
-        self.ensureCursorVisible()
-        self.viewport().update()
-
-    def move(self, direction):
-        cursor = self.textCursor()
-        if cursor.movePosition(direction):
-            self.set_text_cursor(cursor)
-
-    def paintEvent(self, event):
-        HintedTextView.paintEvent(self, event)
-        if self.hasFocus():
-            # Qt doesn't redraw the cursor when using movePosition().
-            # So.. draw our own cursor.
-            rect = self.cursorRect()
-            painter = QtGui.QPainter(self.viewport())
-            painter.fillRect(rect, Qt.SolidPattern)
-
-    def keyPressEvent(self, event):
-        if event.key() == Qt.Key_Up:
-            cursor = self.textCursor()
-            position = cursor.position()
-            if position == 0 and not cursor.hasSelection():
-                # The cursor is at the beginning of the line.
-                # If we have selection then simply reset the cursor.
-                # Otherwise, emit a signal so that the parent can
-                # change focus.
-                self.emit(SIGNAL('leave()'))
-        return HintedTextView.keyPressEvent(self, event)

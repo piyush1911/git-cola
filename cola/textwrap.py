@@ -219,6 +219,7 @@ def word_wrap(text, tabwidth, limit):
     # Acked-by:, Signed-off-by:, Helped-by:, etc.
     special_tag_rgx = re.compile(
             r'^('
+            r'(('
             r'Acked-by|'
             r"Ack'd-by|"
             r'Based-on-patch-by|'
@@ -233,6 +234,7 @@ def word_wrap(text, tabwidth, limit):
             r'Backtraced-by|'
             r'Helped-by|'
             r'Liked-by|'
+            r'Link|'
             r'Improved-by|'
             r'Inspired-by|'
             r'Initial-patch-by|'
@@ -242,9 +244,12 @@ def word_wrap(text, tabwidth, limit):
             r'Mentored-by|'
             r'Patch-by|'
             r'Proposed-by|'
+            r'References|'
+            r'Related-to|'
             r'Reported-by|'
             r'Requested-by|'
             r'Reviewed-by|'
+            r'See-also|'
             r'Signed-off-by|'
             r'Signed-Off-by|'
             r'Spotted-by|'
@@ -252,7 +257,9 @@ def word_wrap(text, tabwidth, limit):
             r'Tested-by|'
             r'Tested-on-([a-zA-Z-_]+)-by|'
             r'With-suggestions-by'
-            r'):')
+            r'):)'
+            r'|([Cc]\.\s*[Ff]\.\s+)'
+            r')')
 
     w = TextWrapper(width=limit,
                     tabwidth=tabwidth,

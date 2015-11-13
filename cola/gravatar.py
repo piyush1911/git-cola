@@ -5,34 +5,36 @@ import time
 from PyQt4 import QtGui
 from PyQt4 import QtCore
 from PyQt4 import QtNetwork
-from PyQt4.QtCore import Qt
 from PyQt4.QtCore import SIGNAL
 
-from cola import resources
 from cola import core
+from cola import icons
 from cola.compat import ustr, urllib
+from cola.widgets import defs
 import hashlib
 
 
 class Gravatar(object):
+
     @staticmethod
     def url_for_email(email, imgsize):
         email_hash = hashlib.md5(core.encode(email)).hexdigest()
-        default_url = b'http://git-cola.github.io/images/git-64x64.jpg'
+        default_url = b'https://git-cola.github.io/images/git-64x64.jpg'
         encoded_url = urllib.quote(default_url, b'')
         query = '?s=%d&d=%s' % (imgsize, encoded_url)
-        url = 'http://gravatar.com/avatar/' + email_hash + query
+        url = 'https://gravatar.com/avatar/' + email_hash + query
         return url
 
 
 class GravatarLabel(QtGui.QLabel):
+
     def __init__(self, parent=None):
         QtGui.QLabel.__init__(self, parent)
 
         self.email = None
         self.response = None
         self.timeout = 0
-        self.imgsize = 48
+        self.imgsize = defs.medium_icon
         self.pixmaps = {}
 
         self.network = QtNetwork.QNetworkAccessManager()
@@ -60,8 +62,7 @@ class GravatarLabel(QtGui.QLabel):
 
     def default_pixmap_as_bytes(self):
         xres = self.imgsize
-        pixmap = QtGui.QPixmap(resources.icon('git.svg'))
-        pixmap = pixmap.scaledToHeight(xres, Qt.SmoothTransformation)
+        pixmap = icons.cola().pixmap(xres)
         byte_array = QtCore.QByteArray()
         buf = QtCore.QBuffer(byte_array)
         buf.open(QtCore.QIODevice.WriteOnly)

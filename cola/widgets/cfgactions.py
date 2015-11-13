@@ -9,10 +9,10 @@ from PyQt4.QtCore import SIGNAL
 from cola import core
 from cola import gitcfg
 from cola import gitcmds
+from cola import icons
 from cola import qtutils
 from cola.i18n import N_
 from cola.interaction import Interaction
-from cola.qtutils import create_button
 from cola.widgets import defs
 from cola.widgets import completion
 from cola.widgets import standard
@@ -25,8 +25,8 @@ def install():
 
 
 def get_config_actions():
-    cfg = gitcfg.instance()
-    return cfg.get_guitool_names()
+    cfg = gitcfg.current()
+    return cfg.get_guitool_names_and_shortcuts()
 
 
 def confirm_config_action(name, opts):
@@ -56,6 +56,7 @@ def run_command(title, command):
 
 class GitCommandWidget(standard.Dialog):
     """Nice TextView that reads the output of a command syncronously"""
+
     # Keep us in scope otherwise PyQt kills the widget
     def __init__(self, title, parent=None):
         standard.Dialog.__init__(self, parent)
@@ -69,9 +70,6 @@ class GitCommandWidget(standard.Dialog):
         self.out = ''
         self.err = ''
 
-        self._layout = QtGui.QVBoxLayout(self)
-        self._layout.setContentsMargins(3, 3, 3, 3)
-
         # Create the text browser
         self.output_text = QtGui.QTextBrowser(self)
         self.output_text.setAcceptDrops(False)
@@ -80,19 +78,16 @@ class GitCommandWidget(standard.Dialog):
         self.output_text.setReadOnly(True)
         self.output_text.setAcceptRichText(False)
 
-        self._layout.addWidget(self.output_text)
-
         # Create abort / close buttons
-        self.button_abort = QtGui.QPushButton(self)
-        self.button_abort.setText(N_('Abort'))
-        self.button_close = QtGui.QPushButton(self)
-        self.button_close.setText(N_('Close'))
+        # Start with abort disabled - will be enabled when the process is run.
+        self.button_abort = qtutils.create_button(text=N_('Abort'),
+                                                  enabled=False)
+        self.button_close = qtutils.close_button()
 
         # Put them in a horizontal layout at the bottom.
         self.button_box = QtGui.QDialogButtonBox(self)
         self.button_box.addButton(self.button_abort, QtGui.QDialogButtonBox.RejectRole)
         self.button_box.addButton(self.button_close, QtGui.QDialogButtonBox.AcceptRole)
-        self._layout.addWidget(self.button_box)
 
         # Connect the signals to the process
         self.connect(self.proc, SIGNAL('readyReadStandardOutput()'),
@@ -102,11 +97,13 @@ class GitCommandWidget(standard.Dialog):
         self.connect(self.proc, SIGNAL('finished(int)'), self.finishProc)
         self.connect(self.proc, SIGNAL('stateChanged(QProcess::ProcessState)'), self.stateChanged)
 
-        # Start with abort disabled - will be enabled when the process is run.
-        self.button_abort.setEnabled(False)
-
         qtutils.connect_button(self.button_abort, self.abortProc)
         qtutils.connect_button(self.button_close, self.close)
+
+        self._layout = qtutils.vbox(defs.margin, defs.spacing,
+                                    self.output_text, self.button_box)
+        self.setLayout(self._layout)
+
         self.resize(720, 420)
 
     def set_command(self, command):
@@ -157,7 +154,7 @@ class GitCommandWidget(standard.Dialog):
             info_text = N_('Abort the action?')
             ok_text = N_('Abort Action')
             if qtutils.confirm(title, msg, info_text, ok_text,
-                               default=False, icon=qtutils.discard_icon()):
+                               default=False, icon=icons.close()):
                 self.abortProc()
                 event.accept()
             else:
@@ -179,45 +176,46 @@ class GitCommandWidget(standard.Dialog):
 
 
 class ActionDialog(standard.Dialog):
+
+    VALUES = {}
+
     def __init__(self, parent, name, opts):
         standard.Dialog.__init__(self, parent)
         self.name = name
         self.opts = opts
 
-        self.setWindowModality(Qt.ApplicationModal)
+        try:
+            values = self.VALUES[name]
+        except KeyError:
+            values = self.VALUES[name] = {}
 
-        self.layt = QtGui.QVBoxLayout()
-        self.layt.setMargin(defs.margin)
-        self.layt.setSpacing(defs.spacing)
-        self.setLayout(self.layt)
+        self.setWindowModality(Qt.ApplicationModal)
 
         title = opts.get('title')
         if title:
             self.setWindowTitle(os.path.expandvars(title))
 
         self.prompt = QtGui.QLabel()
-
         prompt = opts.get('prompt')
         if prompt:
             self.prompt.setText(os.path.expandvars(prompt))
-        self.layt.addWidget(self.prompt)
-
 
         self.argslabel = QtGui.QLabel()
         if 'argprompt' not in opts or opts.get('argprompt') is True:
             argprompt = N_('Arguments')
         else:
             argprompt = opts.get('argprompt')
-
         self.argslabel.setText(argprompt)
 
         self.argstxt = QtGui.QLineEdit()
-        self.argslayt = QtGui.QHBoxLayout()
-        self.argslayt.addWidget(self.argslabel)
-        self.argslayt.addWidget(self.argstxt)
-        self.layt.addLayout(self.argslayt)
-
-        if not self.opts.get('argprompt'):
+        if self.opts.get('argprompt'):
+            try:
+                # Remember the previous value
+                saved_value = values['argstxt']
+                self.argstxt.setText(saved_value)
+            except KeyError:
+                pass
+        else:
             self.argslabel.setMinimumSize(1, 1)
             self.argstxt.setMinimumSize(1, 1)
             self.argstxt.hide()
@@ -235,24 +233,34 @@ class ActionDialog(standard.Dialog):
             revprompt = opts.get('revprompt')
         self.revselect = RevisionSelector(self, revs)
         self.revselect.set_revision_label(revprompt)
-        self.layt.addWidget(self.revselect)
 
         if not opts.get('revprompt'):
             self.revselect.hide()
 
         # Close/Run buttons
-        self.btnlayt = QtGui.QHBoxLayout()
-        self.btnlayt.addStretch()
-        self.closebtn = create_button(text=N_('Close'), layout=self.btnlayt)
-        self.runbtn = create_button(text=N_('Run'), layout=self.btnlayt)
-        self.runbtn.setDefault(True)
-        self.layt.addLayout(self.btnlayt)
+        self.closebtn = qtutils.close_button()
+        self.runbtn = qtutils.create_button(text=N_('Run'), default=True,
+                                            icon=icons.ok())
 
-        # Widen the dialog by default
-        self.resize(666, self.height())
+        self.argslayt = qtutils.hbox(defs.margin, defs.spacing,
+                                     self.argslabel, self.argstxt)
+
+        self.btnlayt = qtutils.hbox(defs.margin, defs.spacing, qtutils.STRETCH,
+                                    self.closebtn, self.runbtn)
+
+        self.layt = qtutils.vbox(defs.margin, defs.spacing,
+                                 self.prompt, self.argslayt,
+                                 self.revselect, self.btnlayt)
+        self.setLayout(self.layt)
+
+        self.connect(self.argstxt, SIGNAL('textChanged(QString)'),
+                     self._argstxt_changed)
 
         qtutils.connect_button(self.closebtn, self.reject)
         qtutils.connect_button(self.runbtn, self.accept)
+
+        # Widen the dialog by default
+        self.resize(666, self.height())
 
     def revision(self):
         return self.revselect.revision()
@@ -260,51 +268,48 @@ class ActionDialog(standard.Dialog):
     def args(self):
         return self.argstxt.text()
 
+    def _argstxt_changed(self, value):
+        """Store the argstxt value so that we can remember it between calls"""
+        self.VALUES[self.name]['argstxt'] = ustr(value)
+
 
 class RevisionSelector(QtGui.QWidget):
+
     def __init__(self, parent, revs):
         QtGui.QWidget.__init__(self, parent)
 
         self._revs = revs
         self._revdict = dict(revs)
 
-        self._layt = QtGui.QVBoxLayout()
-        self._layt.setMargin(0)
-        self.setLayout(self._layt)
-
-        self._rev_layt = QtGui.QHBoxLayout()
-        self._rev_layt.setMargin(0)
-
         self._rev_label = QtGui.QLabel()
-        self._rev_layt.addWidget(self._rev_label)
-
         self._revision = completion.GitRefLineEdit()
-        self._rev_layt.addWidget(self._revision)
-
-        self._layt.addLayout(self._rev_layt)
-
-        self._radio_layt = QtGui.QHBoxLayout()
-        self._radio_btns = {}
 
         # Create the radio buttons
+        radio_btns = []
+        self._radio_btns = {}
         for label, rev_list in self._revs:
-            radio = QtGui.QRadioButton()
-            radio.setText(label)
+            radio = qtutils.radio(text=label)
             radio.setObjectName(label)
             qtutils.connect_button(radio, self._set_revision_list)
-            self._radio_layt.addWidget(radio)
+            radio_btns.append(radio)
             self._radio_btns[label] = radio
-
-        self._radio_layt.addStretch()
-
-        self._layt.addLayout(self._radio_layt)
+        radio_btns.append(qtutils.STRETCH)
 
         self._rev_list = QtGui.QListWidget()
-        self._layt.addWidget(self._rev_list)
-
         label, rev_list = self._revs[0]
         self._radio_btns[label].setChecked(True)
         qtutils.set_items(self._rev_list, rev_list)
+
+        self._rev_layt = qtutils.hbox(defs.no_margin, defs.spacing,
+                                      self._rev_label, self._revision)
+
+        self._radio_layt = qtutils.hbox(defs.margin, defs.spacing,
+                                        *radio_btns)
+
+        self._layt = qtutils.vbox(defs.no_margin, defs.spacing,
+                                  self._rev_layt, self._radio_layt,
+                                  self._rev_list)
+        self.setLayout(self._layt)
 
         self.connect(self._rev_list, SIGNAL('itemSelectionChanged()'),
                      self._rev_list_selection_changed)

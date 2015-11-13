@@ -1,11 +1,11 @@
 # Copyright (C) 2009, 2010, 2011, 2012, 2013
 # David Aguilar <davvid@gmail.com>
-"""Provides the main() routine and ColaApplicaiton"""
+"""Provides the main() routine and ColaApplication"""
 from __future__ import division, absolute_import, unicode_literals
 
 import argparse
-import glob
 import os
+import shutil
 import signal
 import sys
 
@@ -17,7 +17,29 @@ if sys.platform == 'darwin':
     if os.path.isdir(homebrew_mods):
         sys.path.append(homebrew_mods)
 
-import sip
+
+errmsg = """Sorry, you do not seem to have PyQt4 installed.
+Please install it before using git-cola.
+e.g.: sudo apt-get install python-qt4
+"""
+
+# /usr/include/sysexits.h
+#define EX_OK           0   /* successful termination */
+#define EX_USAGE        64  /* command line usage error */
+#define EX_NOINPUT      66  /* cannot open input */
+#define EX_UNAVAILABLE  69  /* service unavailable */
+EX_OK = 0
+EX_USAGE = 64
+EX_NOINPUT = 66
+EX_UNAVAILABLE = 69
+
+
+try:
+    import sip
+except ImportError:
+    sys.stderr.write(errmsg)
+    sys.exit(EX_UNAVAILABLE)
+
 sip.setapi('QString', 1)
 sip.setapi('QDate', 1)
 sip.setapi('QDateTime', 1)
@@ -27,21 +49,23 @@ sip.setapi('QUrl', 1)
 sip.setapi('QVariant', 1)
 
 try:
-    from PyQt4 import QtGui
     from PyQt4 import QtCore
-    from PyQt4.QtCore import SIGNAL
 except ImportError:
-    sys.stderr.write('Sorry, you do not seem to have PyQt4 installed.\n')
-    sys.stderr.write('Please install it before using git-cola.\n')
-    sys.stderr.write('e.g.: sudo apt-get install python-qt4\n')
-    sys.exit(-1)
+    sys.stderr.write(errmsg)
+    sys.exit(EX_UNAVAILABLE)
+
+from PyQt4 import QtGui
+from PyQt4.QtCore import Qt
+from PyQt4.QtCore import SIGNAL
 
 # Import cola modules
 from cola import cmds
 from cola import core
 from cola import compat
+from cola import fsmonitor
 from cola import git
-from cola import inotify
+from cola import gitcfg
+from cola import icons
 from cola import i18n
 from cola import qtcompat
 from cola import qtutils
@@ -50,6 +74,7 @@ from cola import utils
 from cola import version
 from cola.compat import ustr
 from cola.decorators import memoize
+from cola.i18n import N_
 from cola.interaction import Interaction
 from cola.models import main
 from cola.widgets import cfgactions
@@ -62,7 +87,7 @@ def setup_environment():
     signal.signal(signal.SIGINT, signal.SIG_DFL)
 
     # Session management wants an absolute path when restarting
-    sys.argv[0] = core.abspath(sys.argv[0])
+    sys.argv[0] = sys_argv0 = core.abspath(sys.argv[0])
 
     # Spoof an X11 display for SSH
     os.environ.setdefault('DISPLAY', ':0')
@@ -75,8 +100,8 @@ def setup_environment():
 
     # Setup the path so that git finds us when we run 'git cola'
     path_entries = core.getenv('PATH', '').split(os.pathsep)
-    bindir = os.path.dirname(core.abspath(__file__))
-    path_entries.insert(0, bindir)
+    bindir = os.path.dirname(sys_argv0)
+    path_entries.append(bindir)
     path = os.pathsep.join(path_entries)
     compat.setenv('PATH', path)
 
@@ -138,34 +163,21 @@ class ColaApplication(object):
     ColaApplication handles i18n of user-visible data
     """
 
-    def __init__(self, argv, locale=None, gui=True, git_path=None):
+    def __init__(self, argv, locale=None, gui=True):
         cfgactions.install()
         i18n.install(locale)
         qtcompat.install()
         qtutils.install()
+        icons.install()
 
-        # Call _update_files when inotify detects changes
-        inotify.observer(_update_files)
-
-        # Add the default style dir so that we find our icons
-        icon_dir = resources.icon_dir()
-        qtcompat.add_search_path(os.path.basename(icon_dir), icon_dir)
+        QtCore.QObject.connect(fsmonitor.instance(), SIGNAL('files_changed'),
+                               self._update_files)
 
         if gui:
-            self._app = instance(tuple(argv), git_path)
-            self._app.setWindowIcon(qtutils.git_icon())
+            self._app = current(tuple(argv))
+            self._app.setWindowIcon(icons.cola())
         else:
             self._app = QtCore.QCoreApplication(argv)
-
-        self._app.setStyleSheet("""
-            QMainWindow::separator {
-                width: 3px;
-                height: 3px;
-            }
-            QMainWindow::separator:hover {
-                background: white;
-            }
-            """)
 
     def activeWindow(self):
         """Wrap activeWindow()"""
@@ -182,18 +194,28 @@ class ColaApplication(object):
         if hasattr(self._app, 'view'):
             self._app.view = view
 
+    def _update_files(self):
+        # Respond to file system updates
+        cmds.do(cmds.Refresh)
+
 
 @memoize
-def instance(argv, git_path=None):
-    return ColaQApplication(list(argv), git_path)
+def current(argv):
+    return ColaQApplication(list(argv))
 
 
 class ColaQApplication(QtGui.QApplication):
 
-    def __init__(self, argv, git_path=None):
+    def __init__(self, argv):
         QtGui.QApplication.__init__(self, argv)
-        self.git_path = git_path
         self.view = None ## injected by application_start()
+
+    def event(self, e):
+        if e.type() == QtCore.QEvent.ApplicationActivate:
+            cfg = gitcfg.current()
+            if cfg.get('cola.refreshonfocus', False):
+                cmds.do(cmds.Refresh)
+        return QtGui.QApplication.event(self, e)
 
     def commitData(self, session_mgr):
         """Save session data"""
@@ -202,8 +224,7 @@ class ColaQApplication(QtGui.QApplication):
         sid = ustr(session_mgr.sessionId())
         skey = ustr(session_mgr.sessionKey())
         session_id = '%s_%s' % (sid, skey)
-        session = Session(session_id,
-                          repo=os.getcwdu(), git_path=self.git_path)
+        session = Session(session_id, repo=core.getcwd())
         self.view.save_state(settings=session)
 
 
@@ -211,16 +232,10 @@ def process_args(args):
     if args.version:
         # Accept 'git cola --version' or 'git cola version'
         version.print_version()
-        sys.exit(0)
+        sys.exit(EX_OK)
 
     # Handle session management
     restore_session(args)
-
-    if args.git_path:
-        # Adds git to the PATH.  This is needed on Windows.
-        path_entries = core.getenv('PATH', '').split(os.pathsep)
-        path_entries.insert(0, os.path.dirname(core.decode(args.git_path)))
-        compat.setenv('PATH', os.pathsep.join(path_entries))
 
     # Bail out if --repo is not a directory
     repo = core.decode(args.repo)
@@ -228,9 +243,10 @@ def process_args(args):
         repo = repo[len('file:'):]
     repo = core.realpath(repo)
     if not core.isdir(repo):
-        sys.stderr.write("fatal: '%s' is not a directory.  "
-                         'Consider supplying -r <path>.\n' % repo)
-        sys.exit(-1)
+        errmsg = N_('fatal: "%s" is not a directory.  '
+                    'Please specify a correct --repo <path>.') % repo
+        core.stderr(errmsg)
+        sys.exit(EX_USAGE)
 
     # We do everything relative to the repo root
     os.chdir(args.repo)
@@ -246,7 +262,6 @@ def restore_session(args):
     if session.load():
         args.settings = session
         args.repo = session.repo
-        args.git_path = session.git_path
 
 
 def application_init(args, update=False):
@@ -258,10 +273,12 @@ def application_init(args, update=False):
     process_args(args)
 
     app = new_application(args)
-    model = new_model(app, args.repo, prompt=args.prompt)
+    model = new_model(app, args.repo,
+                      prompt=args.prompt, settings=args.settings)
     if update:
         model.update_status()
-    return ApplicationContext(args, app, model)
+    cfg = gitcfg.current()
+    return ApplicationContext(args, app, cfg, model)
 
 
 def application_start(context, view):
@@ -274,10 +291,11 @@ def application_start(context, view):
     view.raise_()
 
     # Scan for the first time
-    task = _start_update_thread(context.model)
+    runtask = qtutils.RunTask(parent=view)
+    init_update_task(view, runtask, context.model)
 
-    # Start the inotify thread
-    inotify.start()
+    # Start the filesystem monitor thread
+    fsmonitor.instance().start()
 
     msg_timer = QtCore.QTimer()
     msg_timer.setSingleShot(True)
@@ -288,13 +306,11 @@ def application_start(context, view):
     result = context.app.exec_()
 
     # All done, cleanup
-    inotify.stop()
+    fsmonitor.instance().stop()
     QtCore.QThreadPool.globalInstance().waitForDone()
-    del task
 
-    pattern = utils.tmp_file_pattern()
-    for filename in glob.glob(pattern):
-        os.unlink(filename)
+    tmpdir = utils.tmpdir()
+    shutil.rmtree(tmpdir, ignore_errors=True)
 
     return result
 
@@ -305,16 +321,12 @@ def add_common_arguments(parser):
                         help='print version number')
 
     # Specifies a git repository to open
-    parser.add_argument('-r', '--repo', metavar='<repo>', default=os.getcwd(),
+    parser.add_argument('-r', '--repo', metavar='<repo>', default=core.getcwd(),
                         help='open the specified git repository')
 
     # Specifies that we should prompt for a repository at startup
     parser.add_argument('--prompt', action='store_true', default=False,
                         help='prompt for a repository')
-
-    # Used on Windows for adding 'git' to the path
-    parser.add_argument('-g', '--git-path', metavar='<path>', default=None,
-                        help='use the specified git executable')
 
     # Resume an X Session Management session
     parser.add_argument('-session', metavar='<session>', default=None,
@@ -323,17 +335,31 @@ def add_common_arguments(parser):
 
 def new_application(args):
     # Initialize the app
-    return ColaApplication(sys.argv, git_path=args.git_path)
+    return ColaApplication(sys.argv)
 
 
-def new_model(app, repo, prompt=False):
+def new_model(app, repo, prompt=False, settings=None):
     model = main.model()
-    valid = model.set_worktree(repo) and not prompt
+    valid = False
+    if not prompt:
+        valid = model.set_worktree(repo)
+        if not valid:
+            # We are not currently in a git repository so we need to find one.
+            # Before prompting the user for a repostiory, check if they've
+            # configured a default repository and attempt to use it.
+            default_repo = gitcfg.current().get('cola.defaultrepo')
+            if default_repo:
+                valid = model.set_worktree(default_repo)
+
     while not valid:
-        startup_dlg = startup.StartupDialog(app.activeWindow())
+        # If we've gotten into this loop then that means that neither the
+        # current directory nor the default repository were available.
+        # Prompt the user for a repository.
+        startup_dlg = startup.StartupDialog(app.activeWindow(),
+                                            settings=settings)
         gitdir = startup_dlg.find_git_repo()
         if not gitdir:
-            sys.exit(-1)
+            sys.exit(EX_NOINPUT)
         valid = model.set_worktree(gitdir)
 
     # Finally, go to the root of the git repo
@@ -341,40 +367,30 @@ def new_model(app, repo, prompt=False):
     return model
 
 
-def _start_update_thread(model):
+def init_update_task(parent, runtask, model):
     """Update the model in the background
 
     git-cola should startup as quickly as possible.
 
     """
-    class UpdateTask(QtCore.QRunnable):
-        def run(self):
-            model.update_status(update_index=True)
 
-    # Hold onto a reference to prevent PyQt from dereferencing
-    task = UpdateTask()
-    QtCore.QThreadPool.globalInstance().start(task)
+    def update_status():
+        model.update_status(update_index=True)
 
-    return task
+    task = qtutils.SimpleTask(parent, update_status)
+    runtask.start(task)
 
 
 def _send_msg():
     if git.GIT_COLA_TRACE == 'trace':
-        msg = ('info: Trace enabled.  '
-               'Many of commands reported with "trace" use git\'s stable '
-               '"plumbing" API and are not intended for typical '
-               'day-to-day use.  Here be dragons')
+        msg = 'info: debug mode enabled using GIT_COLA_TRACE=trace'
         Interaction.log(msg)
-
-
-def _update_files():
-    # Respond to inotify updates
-    cmds.do(cmds.Refresh)
 
 
 class ApplicationContext(object):
 
-    def __init__(self, args, app, model):
+    def __init__(self, args, app, cfg, model):
         self.args = args
         self.app = app
+        self.cfg = cfg
         self.model = model

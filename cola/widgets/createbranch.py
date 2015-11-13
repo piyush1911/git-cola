@@ -6,8 +6,8 @@ from PyQt4.QtCore import Qt
 from PyQt4.QtCore import SIGNAL
 
 from cola import gitcmds
+from cola import icons
 from cola import qtutils
-from cola import utils
 from cola.i18n import N_
 from cola.interaction import Interaction
 from cola.models import main
@@ -17,11 +17,15 @@ from cola.widgets.standard import Dialog
 from cola.compat import ustr
 
 
-def create_new_branch(revision=''):
+COMMAND_SIGNAL = 'command(PyQt_PyObject,PyQt_PyObject,PyQt_PyObject)'
+
+
+def create_new_branch(revision='', settings=None):
     """Launches a dialog for creating a new branch"""
     model = main.MainModel()
     model.update_status()
-    view = CreateBranchDialog(model, qtutils.active_window())
+    view = CreateBranchDialog(model, settings=settings,
+                              parent=qtutils.active_window())
     if revision:
         view.set_revision(revision)
     view.show()
@@ -57,29 +61,29 @@ class CreateThread(QtCore.QThread):
         if track and '/' in revision:
             remote = revision.split('/', 1)[0]
             status, out, err = model.git.fetch(remote)
-            self.emit(SIGNAL('command'), status, out, err)
+            self.emit(SIGNAL(COMMAND_SIGNAL), status, out, err)
             results.append(('fetch', status, out, err))
 
         if status == 0:
             status, out, err = model.create_branch(branch, revision,
                                                    force=reset,
                                                    track=track)
-            self.emit(SIGNAL('command'), status, out, err)
+            self.emit(SIGNAL(COMMAND_SIGNAL), status, out, err)
 
         results.append(('branch', status, out, err))
         if status == 0 and checkout:
             status, out, err = model.git.checkout(branch)
-            self.emit(SIGNAL('command'), status, out, err)
+            self.emit(SIGNAL(COMMAND_SIGNAL), status, out, err)
             results.append(('checkout', status, out, err))
 
         main.model().update_status()
-        self.emit(SIGNAL('done'), results)
+        self.emit(SIGNAL('done(PyQt_PyObject)'), results)
 
 
 class CreateBranchDialog(Dialog):
     """A dialog for creating branches."""
 
-    def __init__(self, model, parent=None):
+    def __init__(self, model, settings=None, parent=None):
         Dialog.__init__(self, parent=parent)
         self.setAttribute(Qt.WA_MacMetalStyle)
         self.setWindowTitle(N_('Create Branch'))
@@ -109,115 +113,88 @@ class CreateBranchDialog(Dialog):
         if current:
             self.revision.setText(current)
 
-        self.local_radio = QtGui.QRadioButton()
-        self.local_radio.setText(N_('Local branch'))
-        self.local_radio.setChecked(True)
-
-        self.remote_radio = QtGui.QRadioButton()
-        self.remote_radio.setText(N_('Tracking branch'))
-
-        self.tag_radio = QtGui.QRadioButton()
-        self.tag_radio.setText(N_('Tag'))
+        self.local_radio = qtutils.radio(text=N_('Local branch'), checked=True)
+        self.remote_radio = qtutils.radio(text=N_('Tracking branch'))
+        self.tag_radio = qtutils.radio(text=N_('Tag'))
 
         self.branch_list = QtGui.QListWidget()
 
         self.update_existing_label = QtGui.QLabel()
         self.update_existing_label.setText(N_('Update Existing Branch:'))
 
-        self.no_update_radio = QtGui.QRadioButton()
-        self.no_update_radio.setText(N_('No'))
+        self.no_update_radio = qtutils.radio(text=N_('No'))
+        self.ffwd_only_radio = qtutils.radio(text=N_('Fast Forward Only'),
+                                             checked=True)
+        self.reset_radio = qtutils.radio(text=N_('Reset'))
 
-        self.ffwd_only_radio = QtGui.QRadioButton()
-        self.ffwd_only_radio.setText(N_('Fast Forward Only'))
-        self.ffwd_only_radio.setChecked(True)
+        text = N_('Fetch Tracking Branch')
+        self.fetch_checkbox = qtutils.checkbox(text=text, checked=True)
 
-        self.reset_radio = QtGui.QRadioButton()
-        self.reset_radio.setText(N_('Reset'))
+        text = N_('Checkout After Creation')
+        self.checkout_checkbox = qtutils.checkbox(text=text, checked=True)
 
-        self.options_bottom_layout = QtGui.QHBoxLayout()
-        self.options_checkbox_layout = QtGui.QVBoxLayout()
-
-        self.fetch_checkbox = QtGui.QCheckBox()
-        self.fetch_checkbox.setText(N_('Fetch Tracking Branch'))
-        self.fetch_checkbox.setChecked(True)
-        self.options_checkbox_layout.addWidget(self.fetch_checkbox)
-
-        self.checkout_checkbox = QtGui.QCheckBox()
-        self.checkout_checkbox.setText(N_('Checkout After Creation'))
-        self.checkout_checkbox.setChecked(True)
-        self.options_checkbox_layout.addWidget(self.checkout_checkbox)
-
-        self.options_bottom_layout.addLayout(self.options_checkbox_layout)
-        self.options_bottom_layout.addStretch()
-
+        icon = icons.branch()
         self.create_button = qtutils.create_button(text=N_('Create Branch'),
-                                                   icon=qtutils.git_icon())
-        self.create_button.setDefault(True)
+                                                   icon=icon, default=True)
+        self.close_button = qtutils.close_button()
 
-        self.close_button = qtutils.create_button(text=N_('Close'))
+        self.options_checkbox_layout = qtutils.hbox(defs.margin, defs.spacing,
+                                                    self.fetch_checkbox,
+                                                    self.checkout_checkbox,
+                                                    qtutils.STRETCH)
 
-        self.branch_name_layout = QtGui.QHBoxLayout()
-        self.branch_name_layout.addWidget(self.branch_name_label)
-        self.branch_name_layout.addWidget(self.branch_name)
+        self.branch_name_layout = qtutils.hbox(defs.margin, defs.spacing,
+                                               self.branch_name_label,
+                                               self.branch_name)
 
-        self.rev_start_radiobtn_layout = QtGui.QHBoxLayout()
-        self.rev_start_radiobtn_layout.addWidget(self.local_radio)
-        self.rev_start_radiobtn_layout.addWidget(self.remote_radio)
-        self.rev_start_radiobtn_layout.addWidget(self.tag_radio)
-        self.rev_start_radiobtn_layout.addStretch()
+        self.rev_radio_group = qtutils.buttongroup(self.local_radio,
+                                                   self.remote_radio,
+                                                   self.tag_radio)
 
-        self.rev_start_textinput_layout = QtGui.QHBoxLayout()
-        self.rev_start_textinput_layout.setMargin(0)
-        self.rev_start_textinput_layout.setSpacing(defs.spacing)
-        self.rev_start_textinput_layout.addWidget(self.rev_label)
-        self.rev_start_textinput_layout.addWidget(self.revision)
+        self.rev_radio_layout = qtutils.hbox(defs.margin, defs.spacing,
+                                             self.local_radio,
+                                             self.remote_radio,
+                                             self.tag_radio,
+                                             qtutils.STRETCH)
 
-        self.rev_start_group = QtGui.QGroupBox()
-        self.rev_start_group.setTitle(N_('Starting Revision'))
+        self.rev_start_textinput_layout = qtutils.hbox(defs.no_margin,
+                                                       defs.spacing,
+                                                       self.rev_label,
+                                                       defs.spacing,
+                                                       self.revision)
 
-        self.rev_start_layout = QtGui.QVBoxLayout(self.rev_start_group)
-        self.rev_start_layout.setMargin(defs.margin)
-        self.rev_start_layout.setSpacing(defs.spacing)
-        self.rev_start_layout.addLayout(self.rev_start_radiobtn_layout)
-        self.rev_start_layout.addWidget(self.branch_list)
-        self.rev_start_layout.addLayout(self.rev_start_textinput_layout)
+        self.rev_start_layout = qtutils.vbox(defs.no_margin, defs.spacing,
+                                             self.rev_radio_layout,
+                                             self.branch_list,
+                                             self.rev_start_textinput_layout)
 
-        self.options_radio_layout = QtGui.QHBoxLayout()
-        self.options_radio_layout.addWidget(self.update_existing_label)
-        self.options_radio_layout.addWidget(self.no_update_radio)
-        self.options_radio_layout.addWidget(self.ffwd_only_radio)
-        self.options_radio_layout.addWidget(self.reset_radio)
+        self.options_radio_group = qtutils.buttongroup(self.no_update_radio,
+                                                       self.ffwd_only_radio,
+                                                       self.reset_radio)
 
-        self.option_group = QtGui.QGroupBox()
-        self.option_group.setTitle(N_('Options'))
+        self.options_radio_layout = qtutils.hbox(defs.no_margin, defs.spacing,
+                                                 self.update_existing_label,
+                                                 self.no_update_radio,
+                                                 self.ffwd_only_radio,
+                                                 self.reset_radio,
+                                                 qtutils.STRETCH)
 
-        self.options_grp_layout = QtGui.QVBoxLayout(self.option_group)
-        self.options_grp_layout.setMargin(defs.margin)
-        self.options_grp_layout.setSpacing(defs.spacing)
-        self.options_grp_layout.addLayout(self.options_radio_layout)
-        self.options_grp_layout.addLayout(self.options_bottom_layout)
+        self.buttons_layout = qtutils.hbox(defs.margin, defs.spacing,
+                                           qtutils.STRETCH,
+                                           self.create_button,
+                                           self.close_button)
 
-        self.buttons_layout = QtGui.QHBoxLayout()
-        self.buttons_layout.setMargin(defs.margin)
-        self.buttons_layout.setSpacing(defs.spacing)
-        self.buttons_layout.addWidget(self.create_button)
-        self.buttons_layout.addWidget(self.close_button)
-
-        self.options_section_layout = QtGui.QHBoxLayout()
-        self.options_section_layout.setMargin(defs.margin)
-        self.options_section_layout.setSpacing(defs.spacing)
-        self.options_section_layout.addWidget(self.option_group)
-        self.options_section_layout.addLayout(self.buttons_layout)
-
-        self.main_layout = QtGui.QVBoxLayout()
-        self.main_layout.setMargin(defs.margin)
-        self.main_layout.setSpacing(defs.spacing)
-        self.main_layout.addLayout(self.branch_name_layout)
-        self.main_layout.addWidget(self.rev_start_group)
-        self.main_layout.addLayout(self.options_section_layout)
+        self.main_layout = qtutils.vbox(defs.margin, defs.spacing,
+                                        self.branch_name_layout,
+                                        self.rev_start_layout,
+                                        defs.button_spacing,
+                                        self.options_radio_layout,
+                                        self.options_checkbox_layout,
+                                        self.buttons_layout)
         self.setLayout(self.main_layout)
 
-        qtutils.connect_button(self.close_button, self.reject)
+        qtutils.add_close_action(self)
+        qtutils.connect_button(self.close_button, self.close)
         qtutils.connect_button(self.create_button, self.create_branch)
         qtutils.connect_button(self.local_radio, self.display_model)
         qtutils.connect_button(self.remote_radio, self.display_model)
@@ -226,10 +203,15 @@ class CreateBranchDialog(Dialog):
         self.connect(self.branch_list, SIGNAL('itemSelectionChanged()'),
                      self.branch_item_changed)
 
-        self.connect(self.thread, SIGNAL('command'), self.thread_command)
-        self.connect(self.thread, SIGNAL('done'), self.thread_done)
+        self.connect(self.thread, SIGNAL(COMMAND_SIGNAL),
+                     self.thread_command, Qt.QueuedConnection)
 
-        self.resize(555, 333)
+        self.connect(self.thread, SIGNAL('done(PyQt_PyObject)'),
+                     self.thread_done, Qt.QueuedConnection)
+
+        if not self.restore_state(settings=settings):
+            self.resize(555, 333)
+
         self.display_model()
 
     def set_revision(self, revision):
@@ -293,7 +275,7 @@ class CreateBranchDialog(Dialog):
                                     dict(branch=branch, revision=revision)),
                                    N_('Reset Branch'),
                                    default=False,
-                                   icon=qtutils.icon('undo.svg')):
+                                   icon=icons.undo()):
                 return
         self.setEnabled(False)
         self.progress.setEnabled(True)
@@ -327,18 +309,16 @@ class CreateBranchDialog(Dialog):
         # When the branch selection changes then we should update
         # the "Revision Expression" accordingly.
         qlist = self.branch_list
-        (row, selected) = qtutils.selected_row(qlist)
-        if not selected:
+        remote_branch = qtutils.selected_item(qlist, self.branch_sources())
+        if not remote_branch:
             return
         # Update the model with the selection
-        sources = self.branch_sources()
-        rev = sources[row]
-        self.revision.setText(rev)
+        self.revision.setText(remote_branch)
 
         # Set the branch field if we're branching from a remote branch.
         if not self.remote_radio.isChecked():
             return
-        branch = utils.basename(rev)
+        branch = gitcmds.strip_remote(self.model.remotes, remote_branch)
         if branch == 'HEAD':
             return
         # Signal that we've clicked on a remote branch

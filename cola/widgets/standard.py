@@ -1,5 +1,8 @@
 from __future__ import division, absolute_import, unicode_literals
 
+import time
+
+
 from PyQt4 import QtGui
 from PyQt4 import QtCore
 from PyQt4.QtCore import Qt
@@ -9,7 +12,9 @@ from PyQt4.QtGui import QDockWidget
 from cola import core
 from cola import gitcfg
 from cola import qtcompat
+from cola import qtutils
 from cola.settings import Settings
+from cola.widgets import defs
 
 
 class WidgetMixin(object):
@@ -41,7 +46,7 @@ class WidgetMixin(object):
         if settings is None:
             settings = Settings()
             settings.load()
-        if gitcfg.instance().get('cola.savewindowsettings', True):
+        if gitcfg.current().get('cola.savewindowsettings', True):
             settings.save_gui_state(self)
 
     def restore_state(self, settings=None):
@@ -82,11 +87,14 @@ class WidgetMixin(object):
             'maximized': maximized,
         }
 
-    def closeEvent(self, event):
+    def save_settings(self):
         settings = Settings()
         settings.load()
         settings.add_recent(core.getcwd())
-        self.save_state(settings=settings)
+        return self.save_state(settings=settings)
+
+    def closeEvent(self, event):
+        self.save_settings()
         self.QtClass.closeEvent(self, event)
 
 
@@ -197,6 +205,19 @@ class TreeMixin(object):
 
         # Re-read the event key to take the remappings into account
         key = event.key()
+        if key == Qt.Key_Up:
+            idxs = self.selectedIndexes()
+            rows = [idx.row() for idx in idxs]
+            if len(rows) == 1 and rows[0] == 0:
+                # The cursor is at the beginning of the line.
+                # If we have selection then simply reset the cursor.
+                # Otherwise, emit a signal so that the parent can
+                # change focus.
+                self.emit(SIGNAL('up()'))
+
+        elif key == Qt.Key_Space:
+            self.emit(SIGNAL('space()'))
+
         result = self.QtClass.keyPressEvent(self, event)
 
         # Let others hook in here before we change the indexes
@@ -251,9 +272,22 @@ class TreeMixin(object):
             return None
         return selected_items[0]
 
+    def current_item(self):
+        if hasattr(self, 'currentItem'):
+            item = self.currentItem()
+        else:
+            index = self.currentIndex()
+            if index.isValid():
+                item = self.model().itemFromIndex(index)
+            else:
+                item = None
+        return item
+
 
 class DraggableTreeMixin(TreeMixin):
     """A tree widget with internal drag+drop reordering of rows"""
+
+    ITEMS_MOVED_SIGNAL = 'items_moved'
 
     def __init__(self, QtClass):
         super(DraggableTreeMixin, self).__init__(QtClass)
@@ -295,6 +329,7 @@ class DraggableTreeMixin(TreeMixin):
             self.clearSelection()
             for item in clicked_items:
                 self.setItemSelected(item, True)
+            self.emit(SIGNAL(self.ITEMS_MOVED_SIGNAL), clicked_items)
         self._inner_drag = False
         event.accept() # must be called after dropEvent()
 
@@ -315,9 +350,20 @@ class Widget(WidgetMixin, QtGui.QWidget):
 
 class Dialog(WidgetMixin, QtGui.QDialog):
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, save_settings=False):
         QtGui.QDialog.__init__(self, parent)
         WidgetMixin.__init__(self, QtGui.QDialog)
+        self._save_settings = save_settings
+
+    def close(self):
+        if self._save_settings:
+            self.save_settings()
+        return self.QtClass.close(self)
+
+    def reject(self):
+        if self._save_settings:
+            self.save_settings()
+        return self.QtClass.reject(self)
 
 
 class MainWindow(MainWindowMixin, QtGui.QMainWindow):
@@ -325,6 +371,15 @@ class MainWindow(MainWindowMixin, QtGui.QMainWindow):
     def __init__(self, parent=None):
         QtGui.QMainWindow.__init__(self, parent)
         MainWindowMixin.__init__(self, QtGui.QMainWindow)
+        self.setStyleSheet("""
+            QMainWindow::separator {
+                width: %(separator)spx;
+                height: %(separator)spx;
+            }
+            QMainWindow::separator:hover {
+                background: white;
+            }
+            """ % dict(separator=defs.separator))
 
 
 class TreeView(TreeMixin, QtGui.QTreeView):
@@ -346,3 +401,93 @@ class DraggableTreeWidget(DraggableTreeMixin, QtGui.QTreeWidget):
     def __init__(self, parent=None):
         QtGui.QTreeWidget.__init__(self, parent)
         DraggableTreeMixin.__init__(self, QtGui.QTreeWidget)
+
+
+class ProgressDialog(QtGui.QProgressDialog):
+    """Custom progress dialog
+
+    This dialog ignores the ESC key so that it is not
+    prematurely closed.
+
+    An thread is spawned to animate the progress label text.
+
+    """
+    def __init__(self, title, label, parent):
+        QtGui.QProgressDialog.__init__(self, parent)
+        self.setFont(qtutils.diff_font())
+        self.setRange(0, 0)
+        self.setCancelButton(None)
+        if parent is not None:
+            self.setWindowModality(Qt.WindowModal)
+        self.progress_thread = ProgressAnimationThread(label, self)
+        self.connect(self.progress_thread,
+                     SIGNAL('update_progress(PyQt_PyObject)'),
+                     self.update_progress, Qt.QueuedConnection)
+
+        self.set_details(title, label)
+
+    def set_details(self, title, label):
+        self.setWindowTitle(title)
+        self.setLabelText(label + '     ')
+        self.progress_thread.set_text(label)
+
+    def update_progress(self, txt):
+        self.setLabelText(txt)
+
+    def keyPressEvent(self, event):
+        if event.key() != Qt.Key_Escape:
+            QtGui.QProgressDialog.keyPressEvent(self, event)
+
+    def show(self):
+        QtGui.QApplication.setOverrideCursor(Qt.WaitCursor)
+        self.progress_thread.start()
+        QtGui.QProgressDialog.show(self)
+
+    def hide(self):
+        QtGui.QApplication.restoreOverrideCursor()
+        self.progress_thread.stop()
+        self.progress_thread.wait()
+        QtGui.QProgressDialog.hide(self)
+
+
+class ProgressAnimationThread(QtCore.QThread):
+    """Emits a pseudo-animated text stream for progress bars"""
+
+    def __init__(self, txt, parent, timeout=0.1):
+        QtCore.QThread.__init__(self, parent)
+        self.running = False
+        self.txt = txt
+        self.timeout = timeout
+        self.symbols = [
+            '.  ..',
+            '..  .',
+            '...  ',
+            ' ... ',
+            '  ...',
+        ]
+        self.idx = -1
+
+    def set_text(self, txt):
+        self.txt = txt
+
+    def next(self):
+        self.idx = (self.idx + 1) % len(self.symbols)
+        return self.txt + self.symbols[self.idx]
+
+    def stop(self):
+        self.running = False
+
+    def run(self):
+        self.running = True
+        while self.running:
+            self.emit(SIGNAL('update_progress(PyQt_PyObject)'), self.next())
+            time.sleep(self.timeout)
+
+
+class SpinBox(QtGui.QSpinBox):
+    def __init__(self, parent=None):
+        QtGui.QSpinBox.__init__(self, parent)
+        self.setMinimum(1)
+        self.setMaximum(99999)
+        self.setPrefix('')
+        self.setSuffix('')

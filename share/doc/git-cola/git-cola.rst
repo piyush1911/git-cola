@@ -17,10 +17,6 @@ OPTIONS
 -------
 Start `git cola` in amend mode.
 
--g, --git-path <path>
----------------------
-Path to the `git` binary.  Defaults to the `git` command found in `$PATH`.
-
 --prompt
 --------
 Prompt for a Git repository.  Defaults to the current directory.
@@ -29,9 +25,21 @@ Prompt for a Git repository.  Defaults to the current directory.
 -----------------
 Open the Git repository at `<path>`.  Defaults to the current directory.
 
+-s, --status-filter <filter>
+----------------------------
+Apply the path filter to the status widget.
+
 --version
 ---------
 Print the `git cola` version and exit.
+
+-h, --help
+----------
+Show usage and optional arguments.
+
+--help-commands
+---------------
+Show available sub-commands.
 
 SUB-COMMANDS
 ============
@@ -130,7 +138,7 @@ KEYBOARD SHORTCUTS
 
 You can see the available shortcuts by pressing the ``?`` key,
 choosing ``Help -> Keyboard shortcuts`` from the main menu,
-or by consulting the `keyboard shortcuts reference <../hotkeys.html>`_.
+or by consulting the `git cola keyboard shortcuts reference <https://git-cola.github.io/share/doc/git-cola/hotkeys.html>`_.
 
 TOOLS
 =====
@@ -240,10 +248,10 @@ that use either the cursor location or text selection.
 
 Staging content for commit
 --------------------------
-The ``@@`` patterns denote a new diff region.  Selecting lines of diff
-and using the `Stage Selected` command will stage just the selected lines.
-Clicking within a diff region and selecting `Stage Section` stages the
-entire patch region.
+The ``@@`` patterns denote a new diff hunk.  Selecting lines of diff
+and using the `Stage Selected Lines` command will stage just the selected
+lines.  Clicking within a diff hunk and selecting `Stage Diff Hunk` stages the
+entire patch diff hunk.
 
 The corresponding opposite commands can be performed on staged files as well,
 e.g. staged content can be selectively removed from the index when we are
@@ -318,6 +326,17 @@ into the commit message editor when this option is selected.
 
 The `Status` tool will display all of the changes for the amended commit.
 
+Create Signed Commit
+--------------------
+Tell `git commit` and `git merge` to sign commits using GPG.
+
+Using this option is equivalent to passing the ``--gpg-sign`` option to
+`git commit <http://git-scm.com/docs/git-commit>`_ and
+`git merge <http://git-scm.com/docs/git-merge>`_.
+
+This option's default value can be configured using the `cola.signcommits`
+configuration variable.
+
 APPLY PATCHES
 =============
 Use the ``File -> Apply Patches`` menu item to begin applying patches.
@@ -349,10 +368,27 @@ CONFIGURATION VARIABLES
 =======================
 These variables can be set using `git config` or from the settings.
 
-cola.savewindowsettings
------------------------
-`git cola` will remember its window settings when set to `true`.
-Window settings and X11 sessions are saved in `$HOME/.config/git-cola`.
+cola.blameviewer
+----------------
+The command used to blame files.  Defaults to `git gui blame`.
+
+cola.browserdockable
+--------------------
+Whether to create a dock widget with the `Browser` tool.
+Defaults to `false` to speedup startup time.
+
+cola.checkconflicts
+-------------------
+Inspect unmerged files for conflict markers before staging them.
+This feature helps prevent accidental staging of unresolved merge conflicts.
+Defaults to `true`.
+
+cola.defaultrepo
+----------------
+`git cola`, when run outside of a Git repository, prompts the user for a
+repository.  Set `cola.defaultrepo` to the path of a Git repostiory to make
+`git cola` attempt to use that repository before falling back to prompting
+the user for a repository.
 
 cola.fileattributes
 -------------------
@@ -364,15 +400,17 @@ cola.fontdiff
 -------------
 Specifies the font to use for `git cola`'s diff display.
 
-cola.browserdockable
---------------------
-Whether to create a dock widget with the `Browser` tool.
-Defaults to `false` to speedup startup time.
-
 cola.inotify
 ------------
-Set to `false` to disable inotify support.
-Defaults to `true` when the `pyinotify` module is available.
+Set to `false` to disable file system change monitoring.  Defaults to `true`,
+but also requires either Linux with inotify support or Windows with `pywin32`
+installed for file system change monitoring to actually function.
+
+cola.refreshonfocus
+----------------------
+Set to `true` to automatically refresh when `git cola` gains focus.  Defaults
+to `false` because this can cause a pause whenever switching to `git cola` from
+another application.
 
 cola.linebreak
 --------------
@@ -381,20 +419,68 @@ Defaults to `true`.  This setting is configured using the `Preferences`
 dialog, but it can be toggled for one-off usage using the commit message
 editor's options sub-menu.
 
-cola.tabwidth
--------------
-The number of columns occupied by a tab character.  Defaults to 8.
-
-cola.textwidth
---------------
-The number of columns used for line wrapping.
-Tabs are counted according to `cola.tabwidth`.
+cola.dragencoding
+-----------------
+`git cola` encodes paths dragged from its widgets into `utf-16` when adding
+them to the drag-and-drop mime data (specifically, the `text/x-moz-url` entry).
+`utf-16` is used to make `gnome-terminal` see the right paths, but other
+terminals may expect a different encoding.  If you are using a terminal that
+expects a modern encoding, e.g. `terminator`, then set this value to `utf-8`.
 
 cola.readsize
 -------------
 `git cola` avoids reading large binary untracked files.
 The maximum size to read is controlled by `cola.readsize`
 and defaults to `2048`.
+
+cola.savewindowsettings
+-----------------------
+`git cola` will remember its window settings when set to `true`.
+Window settings and X11 sessions are saved in `$HOME/.config/git-cola`.
+
+cola.signcommits
+----------------
+`git cola` will sign commits by default when set `true`. Defaults to `false`.
+See the section below on setting up GPG for more details.
+
+cola.tabwidth
+-------------
+The number of columns occupied by a tab character.  Defaults to 8.
+
+cola.terminal
+-------------
+The command to use when launching commands within a graphical terminal.
+
+`cola.terminal` defaults to `xterm -e` when unset.
+e.g. when opening a shell, `git cola` will run `xterm -e $SHELL`.
+
+If either `gnome-terminal`, `xfce4-terminal`, or `konsole` are installed
+then they will be preferred over `xterm` when `cola.terminal` is unset.
+
+cola.textwidth
+--------------
+The number of columns used for line wrapping.
+Tabs are counted according to `cola.tabwidth`.
+
+cola.color.text
+---------------
+The default diff text color, in hexadecimal RRGGBB notation.
+Defaults to "030303".
+
+cola.color.add
+--------------
+The default diff "add" background color, in hexadecimal RRGGBB notation.
+Defaults to "d2ffe4".
+
+cola.color.remove
+-----------------
+The default diff "remove" background color, in hexadecimal RRGGBB notation.
+Defaults to "fee0e4".
+
+cola.color.header
+-----------------
+The default diff header text color, in hexadecimal RRGGBB notation.
+Defaults to "bbbbbb".
 
 gui.diffcontext
 ---------------
@@ -439,6 +525,15 @@ environment variables.
 ENVIRONMENT VARIABLES
 =====================
 
+GIT_COLA_SCALE
+--------------
+`git cola` can be made to scale its interface for HiDPI displays.
+When defined, `git cola` will scale icons, radioboxes, and checkboxes
+according to the scale factor.  The default value is `1`.
+A good value is `2` for high-resolution displays.
+
+Fonts are not scaled, as their size can already be set in the settings.
+
 GIT_COLA_TRACE
 --------------
 When defined, `git cola` logs `git` commands to stdout.
@@ -463,6 +558,17 @@ gettext language code, e.g. "en", "de", "ja", "zh", etc.::
     mkdir -p ~/.config/git-cola &&
     echo en >~/.config/git-cola/language
 
+Alternatively you may also use LANGAUGE environmental variable to temporarily
+change `git cola`'s language just like any other gettext-based program.  For
+example to temporarily change `git cola`'s language to English::
+
+    LANGUAGE=en git cola
+
+To make `git cola` use the zh_TW translation with zh_HK, zh, and en as a
+fallback.::
+
+    LANGUAGE=zh_TW:zh_HK:zh:en git cola
+
 
 CUSTOM GUI ACTIONS
 ==================
@@ -477,6 +583,12 @@ executed from the root of the working directory, and in the environment it
 receives the name of the tool as GIT_GUITOOL, the name of the currently
 selected file as FILENAME, and the name of the current branch as CUR_BRANCH
 (if the head is detached, CUR_BRANCH is empty).
+
+guitool.<name>.background
+-------------------------
+Run the command in the background (similar to editing and difftool actions).
+This avoids blocking the GUI.  Setting `background` to `true` implies
+`noconsole` and `norescan`.
 
 guitool.<name>.needsfile
 ------------------------
@@ -526,6 +638,102 @@ Specifies the general prompt string to display at the top of the dialog,
 before subsections for argprompt and revprompt.
 The default value includes the actual command.
 
+guitool.<name>.shortcut
+-----------------------
+Specifies a keyboard shortcut for the custom tool.
+
+The value must be a valid string understood by the `QAction::setShortcut()` API.
+See http://qt-project.org/doc/qt-4.8/qkeysequence.html#QKeySequence-2
+for more details about the supported values.
+
+Avoid creating shortcuts that conflict with existing built-in `git cola`
+shortcuts.  Creating a conflict will result in no action when the shortcut
+is used.
+
+SETTING UP GPG FOR SIGNED COMMITS
+=================================
+When creating signed commits `gpg` will attempt to read your password from the
+terminal from which `git cola` was launched.
+The way to make this work smoothly is to use a GPG agent so that you can avoid
+needing to re-enter your password every time you commit.
+
+This also gets you a graphical passphrase prompt instead of getting prompted
+for your password in the terminal.
+
+Install gpg-agent and friends
+-----------------------------
+On Mac OS X, you may need to `brew install gpg-agent` and install the
+`Mac GPG Suite <https://gpgtools.org/macgpg2/>`_.
+
+On Linux use your package manager to install gnupg2,
+gnupg-agent and pinentry-qt, e.g.::
+
+    sudo apt-get install gnupg2 gnupg-agent pinentry-qt
+
+On Linux, you should also configure Git so that it uses gpg2 (gnupg2),
+otherwise you will get errors mentioning, "unable to open /dev/tty".
+Set Git's `gpg.program` to `gpg2`::
+
+    git config --global gpg.program gpg2
+
+Configure gpg-agent and a pin-entry program
+-------------------------------------------
+On Mac OS X, edit `~/.gnupg/gpg.conf` to include the line,::
+
+    use-agent
+
+This is typically not needed on Linux, where `gpg2` is used, as
+this is the default value when using `gpg2`.
+
+Next, edit `~/.gnupg/gpg-agent.conf` to contain a pinentry-program line
+pointing to the pinentry program for your platform.
+
+The following example `~/.gnupg/gpg-agent.conf` shows how to use pinentry-qt on Linux::
+
+    pinentry-program /usr/bin/pinentry-qt
+    default-cache-ttl 3600
+    enable-ssh-support
+    use-standard-socket
+
+This following example `.gnupg/gpg-agent.conf` shows how to use MacGPG2's
+pinentry app on On Mac OS X::
+
+    pinentry-program /usr/local/MacGPG2/libexec/pinentry-mac.app/Contents/MacOS/pinentry-mac
+    default-cache-ttl 3600
+    enable-ssh-support
+    use-standard-socket
+
+Once this has been setup then you will need to start the gpg-agent daemon.
+First, check if it is already running.::
+
+    env | grep GPG_AGENT_INFO
+    echo bye | gpg-connect-agent
+
+If you see the following output::
+
+    GPG_AGENT_INFO=...
+    OK closing connection
+
+Then the daemon is already running, and you do not need to start it yourself.
+
+If it is not running, eval the output of `gpg-agent --daemon` in your shell
+prior to launching `git cola`.::
+
+    eval $(gpg-agent --daemon)
+    git cola
+
+WINDOWS NOTES
+=============
+
+Git Installation
+----------------
+If Git is installed in a custom location, e.g. not installed in `C:/Git` or
+Program Files, then the path to Git must be configured by creating a file in
+your home directory `~/.config/git-cola/git-bindir` that points to your git
+installation.  e.g.::
+
+    C:/Tools/Git/bin
+
 LINKS
 =====
 
@@ -535,7 +743,7 @@ https://github.com/git-cola/git-cola/
 
 Git Cola Homepage
 -----------------
-http://git-cola.github.io/
+https://git-cola.github.io/
 
 Mailing List
 ------------

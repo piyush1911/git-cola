@@ -5,11 +5,12 @@ from PyQt4 import QtGui
 from PyQt4.QtCore import Qt
 from PyQt4.QtCore import SIGNAL
 
+from cola import cmds
+from cola import icons
 from cola import qtutils
 from cola.git import git
 from cola.git import STDOUT
 from cola.i18n import N_
-from cola.models import main
 from cola.widgets import defs
 from cola.widgets import text
 from cola.compat import ustr
@@ -33,6 +34,11 @@ class RemoteEditor(QtGui.QDialog):
         self.setWindowTitle(N_('Edit Remotes'))
         if parent is not None:
             self.setWindowModality(Qt.WindowModal)
+            width = max(640, parent.width())
+            height = max(480, parent.height())
+            self.resize(width, height)
+        else:
+            self.resize(720, 300)
 
         self.default_hint = N_(''
             'Add and remove remote repositories using the \n'
@@ -49,48 +55,35 @@ class RemoteEditor(QtGui.QDialog):
         self.info = text.HintedTextView(self.default_hint, self)
         font = self.info.font()
         metrics = QtGui.QFontMetrics(font)
-        width = metrics.width('_' * 72)
+        width = metrics.width('_' * 42)
         height = metrics.height() * 13
         self.info.setMinimumWidth(width)
         self.info.setMinimumHeight(height)
         self.info_thread = RemoteInfoThread(self)
 
-        self.add_btn = QtGui.QToolButton()
-        self.add_btn.setIcon(qtutils.add_icon())
-        self.add_btn.setToolTip(N_('Add new remote git repository'))
+        icon = icons.add()
+        tooltip = N_('Add new remote git repository')
+        self.add_btn = qtutils.create_toolbutton(icon=icon, tooltip=tooltip)
 
-        self.refresh_btn = QtGui.QToolButton()
-        self.refresh_btn.setIcon(qtutils.reload_icon())
-        self.refresh_btn.setToolTip(N_('Refresh'))
+        self.refresh_btn = qtutils.create_toolbutton(icon=icons.sync(),
+                                                     tooltip=N_('Refresh'))
+        self.delete_btn = qtutils.create_toolbutton(icon=icons.remove(),
+                                                    tooltip=N_('Delete remote'))
+        self.close_btn = qtutils.close_button()
 
-        self.delete_btn = QtGui.QToolButton()
-        self.delete_btn.setIcon(qtutils.remove_icon())
-        self.delete_btn.setToolTip(N_('Delete remote'))
-
-        self.close_btn = QtGui.QPushButton(N_('Close'))
-
-        self._top_layout = QtGui.QSplitter()
-        self._top_layout.setOrientation(Qt.Horizontal)
-        self._top_layout.setHandleWidth(defs.handle_width)
-        self._top_layout.addWidget(self.remotes)
-        self._top_layout.addWidget(self.info)
+        self._top_layout = qtutils.splitter(Qt.Horizontal,
+                                            self.remotes, self.info)
         width = self._top_layout.width()
         self._top_layout.setSizes([width//4, width*3//4])
 
-        self._button_layout = QtGui.QHBoxLayout()
-        self._button_layout.addWidget(self.add_btn)
-        self._button_layout.addWidget(self.delete_btn)
-        self._button_layout.addWidget(self.refresh_btn)
-        self._button_layout.addStretch()
-        self._button_layout.addWidget(self.close_btn)
+        self._button_layout = qtutils.hbox(defs.margin, defs.spacing,
+                                           self.add_btn, self.delete_btn,
+                                           self.refresh_btn, qtutils.STRETCH,
+                                           self.close_btn)
 
-        self._layout = QtGui.QVBoxLayout()
-        self._layout.setMargin(defs.margin)
-        self._layout.setSpacing(defs.spacing)
-        self._layout.addWidget(self._top_layout)
-        self._layout.addLayout(self._button_layout)
+        self._layout = qtutils.vbox(defs.margin, defs.spacing,
+                                    self._top_layout, self._button_layout)
         self.setLayout(self._layout)
-
         self.refresh()
 
         qtutils.connect_button(self.add_btn, self.add)
@@ -98,8 +91,8 @@ class RemoteEditor(QtGui.QDialog):
         qtutils.connect_button(self.refresh_btn, self.refresh)
         qtutils.connect_button(self.close_btn, self.close)
 
-        self.connect(self.info_thread, SIGNAL('info'),
-                     self.info.set_value)
+        self.connect(self.info_thread, SIGNAL('info(PyQt_PyObject)'),
+                     self.info.set_value, Qt.QueuedConnection)
 
         self.connect(self.remotes,
                      SIGNAL('itemChanged(QListWidgetItem*)'),
@@ -113,8 +106,8 @@ class RemoteEditor(QtGui.QDialog):
         self.remotes.clear()
         self.remotes.addItems(remotes)
         self.remote_list = remotes
-        self.info.set_hint(self.default_hint)
-        self.info.enable_hint(True)
+        self.info.hint.set_value(self.default_hint)
+        self.info.hint.enable(True)
         for idx, r in enumerate(remotes):
             item = self.remotes.item(idx)
             item.setFlags(item.flags() | Qt.ItemIsEditable)
@@ -125,29 +118,14 @@ class RemoteEditor(QtGui.QDialog):
             return
         name = widget.name.value()
         url = widget.url.value()
-        status, out, err = git.remote('add', name, url)
-        if status != 0:
-            qtutils.critical(N_('Error creating remote "%s"') % name,
-                             out + err)
+        cmds.do(cmds.RemoteAdd, name, url)
         self.refresh()
 
     def delete(self):
         remote = qtutils.selected_item(self.remotes, self.remote_list)
         if remote is None:
             return
-
-        title = N_('Delete Remote')
-        question = N_('Delete remote?')
-        info = N_('Delete remote "%s"') % remote
-        ok_btn = N_('Delete')
-        if not qtutils.confirm(title, question, info, ok_btn):
-            return
-
-        status, out, err = git.remote('rm', remote)
-        if status != 0:
-            qtutils.critical(N_('Error deleting remote "%s"') % remote,
-                             out + err)
-        main.model().update_status()
+        cmds.do(cmds.RemoteRemove, remote)
         self.refresh()
 
     def remote_renamed(self, item):
@@ -164,17 +142,9 @@ class RemoteEditor(QtGui.QDialog):
         if not new_name:
             item.setText(old_name)
             return
-
-        title = N_('Rename Remote')
-        question = N_('Rename remote?')
-        info = (N_('Rename remote "%(current)s" to "%(new)s"?') %
-                dict(current=old_name, new=new_name))
-        ok_btn = N_('Rename')
-
-        if qtutils.confirm(title, question, info, ok_btn):
-            status, out, err = git.remote('rename', old_name, new_name)
-            if status == 0:
-                self.remote_list[idx] = new_name
+        ok, status, out, err = cmds.do(cmds.RemoteRename, old_name, new_name)
+        if ok and status == 0:
+            self.remote_list[idx] = new_name
         else:
             item.setText(old_name)
 
@@ -182,8 +152,8 @@ class RemoteEditor(QtGui.QDialog):
         remote = qtutils.selected_item(self.remotes, self.remote_list)
         if remote is None:
             return
-        self.info.set_hint(N_('Gathering info for "%s"...') % remote)
-        self.info.enable_hint(True)
+        self.info.hint.set_value(N_('Gathering info for "%s"...') % remote)
+        self.info.hint.enable(True)
 
         self.info_thread.remote = remote
         self.info_thread.start()
@@ -202,24 +172,24 @@ class RemoteInfoThread(QtCore.QThread):
         # This call takes a long time and we may have selected a
         # different remote...
         if remote == self.remote:
-            self.emit(SIGNAL('info'), out + err)
+            self.emit(SIGNAL('info(PyQt_PyObject)'), out + err)
         else:
             self.run()
 
 
 class AddRemoteWidget(QtGui.QDialog):
+
     def __init__(self, parent):
         QtGui.QDialog.__init__(self, parent)
         self.setWindowModality(Qt.WindowModal)
 
-        self.add_btn = QtGui.QPushButton(N_('Add Remote'))
-        self.add_btn.setIcon(qtutils.apply_icon())
-
-        self.cancel_btn = QtGui.QPushButton(N_('Cancel'))
+        self.add_btn = qtutils.create_button(text=N_('Add Remote'),
+                                             icon=icons.ok(), enabled=False)
+        self.close_btn = qtutils.close_button()
 
         def lineedit(hint):
             widget = text.HintedLineEdit(hint)
-            widget.enable_hint(True)
+            widget.hint.enable(True)
             metrics = QtGui.QFontMetrics(widget.font())
             widget.setMinimumWidth(metrics.width('_' * 32))
             return widget
@@ -228,36 +198,23 @@ class AddRemoteWidget(QtGui.QDialog):
         self.name = lineedit(N_('Name for the new remote'))
         self.url = lineedit('git://git.example.com/repo.git')
 
-        self._form = QtGui.QFormLayout()
-        self._form.setMargin(defs.margin)
-        self._form.setSpacing(defs.spacing)
-        self._form.addRow(N_('Name'), self.name)
-        self._form.addRow(N_('URL'), self.url)
+        self._form = qtutils.form(defs.margin, defs.spacing,
+                                  (N_('Name'), self.name),
+                                  (N_('URL'), self.url))
 
-        self._btn_layout = QtGui.QHBoxLayout()
-        self._btn_layout.setMargin(0)
-        self._btn_layout.setSpacing(defs.button_spacing)
-        self._btn_layout.addStretch()
-        self._btn_layout.addWidget(self.add_btn)
-        self._btn_layout.addWidget(self.cancel_btn)
+        self._btn_layout = qtutils.hbox(defs.no_margin, defs.button_spacing,
+                                        qtutils.STRETCH,
+                                        self.add_btn, self.close_btn)
 
-        self._layout = QtGui.QVBoxLayout()
-        self._layout.setMargin(defs.margin)
-        self._layout.setSpacing(defs.margin)
-        self._layout.addLayout(self._form)
-        self._layout.addLayout(self._btn_layout)
+        self._layout = qtutils.vbox(defs.margin, defs.spacing,
+                                    self._form, self._btn_layout)
         self.setLayout(self._layout)
 
-        self.connect(self.name, SIGNAL('textChanged(QString)'),
-                     self.validate)
-
-        self.connect(self.url, SIGNAL('textChanged(QString)'),
-                     self.validate)
-
-        self.add_btn.setEnabled(False)
+        self.connect(self.name, SIGNAL('textChanged(QString)'), self.validate)
+        self.connect(self.url, SIGNAL('textChanged(QString)'), self.validate)
 
         qtutils.connect_button(self.add_btn, self.accept)
-        qtutils.connect_button(self.cancel_btn, self.reject)
+        qtutils.connect_button(self.close_btn, self.reject)
 
     def validate(self, dummy_text):
         name = self.name.value()
